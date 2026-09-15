@@ -1227,12 +1227,30 @@ async function testApiConnection(){
   }
 }
 
-// v3/product/list — список offer_id/product_id всего каталога (постранично через last_id).
+// Пробует несколько вариантов пути метода по очереди (у Ozon версии методов
+// время от времени меняются) — берёт первый, который не вернул 404.
+async function ozonFetchAny(paths, body){
+  let lastErr;
+  for(const path of paths){
+    try{
+      return { data: await ozonFetch(path, body), path };
+    }catch(err){
+      lastErr = err;
+      if(!/вернул ошибку 404/.test(err.message)) throw err; // не 404 — нет смысла перебирать дальше
+    }
+  }
+  throw lastErr;
+}
+
+// Список offer_id/product_id всего каталога (постранично через last_id).
+// Ozon менял путь этого метода между версиями — пробуем v3, затем v2.
 async function fetchAllOfferIds(){
   const offerIds = [];
   let lastId = '';
+  let path = 'v3/product/list';
   for(let page=0; page<20; page++){
-    const resp = await ozonFetch('v3/product/list', {filter:{visibility:'ALL'}, limit:1000, last_id:lastId});
+    const {data:resp, path:usedPath} = await ozonFetchAny([path, 'v2/product/list'], {filter:{visibility:'ALL'}, limit:1000, last_id:lastId});
+    path = usedPath; // на следующих страницах сразу используем тот, что сработал
     const items = (resp && resp.result && resp.result.items) || [];
     items.forEach(it=>{ if(it.offer_id) offerIds.push(it.offer_id); });
     lastId = resp && resp.result && resp.result.last_id;
@@ -1241,12 +1259,15 @@ async function fetchAllOfferIds(){
   return offerIds;
 }
 
-// v2/product/info/list — название и числовые SKU (fbo/fbs) по списку offer_id, батчами.
+// Название и числовые SKU (fbo/fbs) по списку offer_id, батчами.
+// Пробуем v2/product/info/list, затем v3/product/info/list.
 async function fetchProductInfoBatch(offerIds){
   const items = [];
+  let path = 'v2/product/info/list';
   for(let i=0;i<offerIds.length;i+=100){
     const batch = offerIds.slice(i,i+100);
-    const resp = await ozonFetch('v2/product/info/list', {offer_id:batch});
+    const {data:resp, path:usedPath} = await ozonFetchAny([path, 'v3/product/info/list'], {offer_id:batch});
+    path = usedPath;
     const respItems = (resp && resp.items) || (resp && resp.result && resp.result.items) || [];
     items.push(...respItems);
   }
@@ -1287,7 +1308,10 @@ async function apiPullStocks(period){
 async function apiPullProducts(period){
   apiLog(`Загружаю товары (${period==='current'?'текущий':'предыдущий'} период)…`);
   try{
-    const offerIds = await fetchAllOfferIds();
+    const stocksEntry = queued[period].find(i=> i.fromApi && i.apiType==='stocks');
+    let offerIds = stocksEntry ? stocksEntry.canonicalRows.map(r=>r.sku).filter(Boolean) : [];
+    if(offerIds.length) apiLog(`Использую список SKU из уже загруженных остатков (${offerIds.length}) — каталог заново не запрашиваю.`);
+    else offerIds = await fetchAllOfferIds();
     if(!offerIds.length){ apiLog('⚠️ Ozon вернул пустой каталог товаров.', true); return; }
     const infos = await fetchProductInfoBatch(offerIds);
     const rows = [];
