@@ -1184,7 +1184,9 @@ function apiLog(msg, isErr){
   el.scrollTop = el.scrollHeight;
 }
 
-async function ozonFetch(path, body){
+function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
+
+async function ozonFetchOnce(path, body){
   if(!API_CREDS.proxyUrl) throw new Error('Не указан адрес прокси-сервера (см. вкладку «Справка»).');
   if(!API_CREDS.clientId || !API_CREDS.apiKey) throw new Error('Не указаны Client-Id / Api-Key.');
   const base = API_CREDS.proxyUrl.replace(/\/+$/,'');
@@ -1210,9 +1212,28 @@ async function ozonFetch(path, body){
   try{ json = text ? JSON.parse(text) : null; }catch(e){ /* не JSON — оставим text для сообщения об ошибке */ }
   if(!res.ok){
     const detail = (json && (json.message || json.code)) ? `${json.code||''} ${json.message||''}`.trim() : text.slice(0,300);
-    throw new Error(`Ozon API вернул ошибку ${res.status}: ${detail || 'без подробностей'}`);
+    const err = new Error(`Ozon API вернул ошибку ${res.status}: ${detail || 'без подробностей'}`);
+    err.status = res.status;
+    throw err;
   }
   return json;
+}
+
+// Ozon ограничивает число запросов в секунду — при 429 подождём и повторим (до 2 раз).
+async function ozonFetch(path, body){
+  const delays = [1200, 2500];
+  for(let attempt=0; ; attempt++){
+    try{
+      return await ozonFetchOnce(path, body);
+    }catch(err){
+      if(err.status===429 && attempt<delays.length){
+        apiLog(`⏳ Ozon просит притормозить (лимит запросов), повтор через ${delays[attempt]/1000} c…`);
+        await sleep(delays[attempt]);
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 async function testApiConnection(){
@@ -1422,7 +1443,9 @@ document.addEventListener('DOMContentLoaded', ()=>{
     document.getElementById('api-status').innerHTML = '';
     try{
       await apiPullStocks('current');
+      await sleep(400);
       await apiPullProducts('current');
+      await sleep(400);
       await apiPullSales('current', from, to);
       apiLog('Данные обновлены — строю отчёт…');
       process();
