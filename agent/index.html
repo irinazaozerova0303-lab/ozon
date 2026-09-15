@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI-агент Ozon — аналитик, менеджер, маркетолог и операционный директор магазина</title>
+<meta name="description" content="Локальный инструмент для селлера Ozon: загрузка Excel-выгрузок, объединение по SKU, расчёт метрик, классификация товаров, контроль остатков и рекламы, ежедневный отчёт и журнал решений.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <span>AI-агент <strong>Ozon</strong></span>
+    </div>
+    <nav class="tabs" id="tabs">
+      <button class="tab active" data-tab="upload">Загрузка данных</button>
+      <button class="tab" data-tab="report">Отчёт дня</button>
+      <button class="tab" data-tab="sku">SKU</button>
+      <button class="tab" data-tab="ads">Реклама</button>
+      <button class="tab" data-tab="stock">Остатки</button>
+      <button class="tab" data-tab="history">Решения</button>
+      <button class="tab" data-tab="help">Справка</button>
+    </nav>
+    <button class="btn-icon" id="btn-settings" title="Настройки / допущения" aria-label="Настройки">⚙</button>
+  </div>
+</header>
+
+<main class="container">
+
+  <!-- UPLOAD -->
+  <section class="panel active" id="panel-upload">
+    <h1>Загрузка данных</h1>
+    <p class="muted">Минимум для отчёта: продажи, остатки, реклама. Для полной экономики добавьте себестоимость, финансы, поставки, товары и отзывы. Ничего не отправляется никуда — все файлы обрабатываются локально в вашем браузере.</p>
+
+    <div class="api-box" id="api-box">
+      <div class="api-box-head">
+        <h2>Подключение к Ozon Seller API <span class="opt">опционально — вместо ручной загрузки остатков и продаж</span></h2>
+        <button class="btn btn-ghost btn-small" id="btn-api-toggle" type="button">Настроить</button>
+      </div>
+      <div id="api-box-body" hidden>
+        <p class="muted">
+          У Ozon Seller API нет CORS — браузер не может обратиться к нему напрямую, поэтому нужен маленький прокси-сервер
+          (бесплатный Cloudflare Worker, разворачивается за 2 минуты, ключ передаётся только через него и не покидает ваш браузер и ваш прокси).
+          Подробности и код прокси — во вкладке «Справка». Реклама, себестоимость, финансы, поставки и отзывы через API пока не подтягиваются — грузите их файлами, как раньше.
+        </p>
+        <div class="settings-grid">
+          <label>Client-Id (Seller API)<input type="text" id="api-client-id" autocomplete="off" placeholder="123456"></label>
+          <label>Api-Key (Seller API)<input type="password" id="api-key" autocomplete="off" placeholder="xxxxxxxx-xxxx-..."></label>
+          <label>Адрес прокси-сервера<input type="text" id="api-proxy-url" autocomplete="off" placeholder="https://ваш-воркер.workers.dev"></label>
+        </div>
+        <div class="upload-controls" style="margin-top:12px;">
+          <button class="btn btn-ghost btn-small" id="btn-api-save">Сохранить ключи (только в этом браузере)</button>
+          <button class="btn btn-ghost btn-small" id="btn-api-test">Проверить подключение</button>
+        </div>
+        <div id="api-status" class="log"></div>
+        <div class="upload-controls" style="margin-top:6px;">
+          <label class="field">Дата с<input type="date" id="api-date-from"></label>
+          <label class="field">Дата по<input type="date" id="api-date-to"></label>
+          <button class="btn btn-ghost btn-small" data-api-pull="stocks" data-period="current">Остатки → текущий период</button>
+          <button class="btn btn-ghost btn-small" data-api-pull="products" data-period="current">Товары (названия) → текущий период</button>
+          <button class="btn btn-ghost btn-small" data-api-pull="sales" data-period="current">Продажи → текущий период</button>
+        </div>
+        <div class="upload-controls">
+          <button class="btn btn-ghost btn-small" data-api-pull="stocks" data-period="previous">Остатки → предыдущий период</button>
+          <button class="btn btn-ghost btn-small" data-api-pull="sales" data-period="previous">Продажи → предыдущий период</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="upload-grid">
+      <div class="upload-zone" id="zone-current">
+        <h2>Текущий период <span class="req">обязательно</span></h2>
+        <label class="dropzone" for="input-current">
+          <span>Перетащите файлы сюда или нажмите, чтобы выбрать</span>
+          <input type="file" id="input-current" multiple accept=".xlsx,.xls,.csv">
+        </label>
+        <div class="file-list" id="list-current"></div>
+      </div>
+
+      <div class="upload-zone" id="zone-previous">
+        <h2>Предыдущий период <span class="opt">опционально — для сравнения и динамики</span></h2>
+        <label class="dropzone" for="input-previous">
+          <span>Перетащите файлы сюда или нажмите, чтобы выбрать</span>
+          <input type="file" id="input-previous" multiple accept=".xlsx,.xls,.csv">
+        </label>
+        <div class="file-list" id="list-previous"></div>
+      </div>
+    </div>
+
+    <div class="upload-controls">
+      <label class="field">
+        Дата отчёта
+        <input type="date" id="report-date">
+      </label>
+      <button class="btn btn-primary" id="btn-process">Обработать данные и построить отчёт</button>
+      <button class="btn btn-ghost" id="btn-templates">Скачать шаблоны файлов (.xlsx)</button>
+      <button class="btn btn-ghost" id="btn-clear">Очистить всё</button>
+    </div>
+
+    <div id="upload-log" class="log"></div>
+  </section>
+
+  <!-- REPORT -->
+  <section class="panel" id="panel-report">
+    <div class="panel-head">
+      <h1>Ежедневный отчёт</h1>
+      <div class="panel-actions">
+        <button class="btn btn-ghost" id="btn-copy-report">Копировать текст</button>
+        <button class="btn btn-ghost" id="btn-download-report">Скачать .txt</button>
+      </div>
+    </div>
+    <div id="report-empty" class="empty-state">Загрузите данные на вкладке «Загрузка данных», чтобы получить отчёт.</div>
+    <pre id="report-text" class="report-text" hidden></pre>
+  </section>
+
+  <!-- SKU -->
+  <section class="panel" id="panel-sku">
+    <h1>Товары (SKU)</h1>
+    <div id="sku-empty" class="empty-state">Нет данных. Сначала загрузите файлы.</div>
+    <div class="table-wrap" id="sku-table-wrap" hidden>
+      <table id="sku-table">
+        <thead><tr>
+          <th>SKU</th><th>Название</th><th>Класс</th><th>Остаток</th><th>Выручка</th><th>Прибыль</th><th>Маржа</th><th>ДРР</th><th>Дни запаса</th><th>Рейтинг</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div id="sku-detail" class="detail-panel" hidden></div>
+  </section>
+
+  <!-- ADS -->
+  <section class="panel" id="panel-ads">
+    <h1>Реклама</h1>
+    <div id="ads-empty" class="empty-state">Нет данных о рекламе.</div>
+    <div id="ads-content" hidden>
+      <h2>Рекомендации</h2>
+      <div id="ads-recommendations" class="reco-list"></div>
+      <h2>Кампании</h2>
+      <div class="table-wrap">
+        <table id="ads-table">
+          <thead><tr>
+            <th>Кампания</th><th>Расход</th><th>Показы</th><th>Клики</th><th>CTR</th><th>Заказы</th><th>Рекл. продажи</th><th>ДРР</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- STOCK -->
+  <section class="panel" id="panel-stock">
+    <h1>Остатки и поставки</h1>
+    <div id="stock-empty" class="empty-state">Нет данных об остатках.</div>
+    <div class="table-wrap" id="stock-table-wrap" hidden>
+      <table id="stock-table">
+        <thead><tr>
+          <th>SKU</th><th>Название</th><th>Остаток</th><th>В пути</th><th>Продажи/день</th><th>Дни запаса</th><th>Срок поставки</th><th>Статус</th><th>Рекомендация</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- HISTORY -->
+  <section class="panel" id="panel-history">
+    <h1>Требует подтверждения и история решений</h1>
+
+    <h2>⚠️ Требует подтверждения владельца</h2>
+    <div id="confirm-empty" class="empty-state">Нет действий, ожидающих подтверждения.</div>
+    <div id="confirm-queue" class="reco-list"></div>
+
+    <h2>История решений</h2>
+    <p class="muted">Хранится только в этом браузере (localStorage). Подтверждённые действия попадают сюда автоматически, либо добавьте решение вручную.</p>
+    <button class="btn btn-ghost" id="btn-add-decision">+ Добавить решение вручную</button>
+    <div class="table-wrap">
+      <table id="history-table">
+        <thead><tr>
+          <th>Дата</th><th>SKU/Кампания</th><th>Показатель</th><th>До</th><th>Изменение</th><th>После</th><th>Причина</th><th>Ожид. эффект</th><th>Факт. эффект</th><th>Вывод</th><th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- HELP -->
+  <section class="panel" id="panel-help">
+    <h1>Справка</h1>
+    <h2>Как это работает</h2>
+    <ol>
+      <li>Загрузите Excel-выгрузки Ozon (продажи, остатки, реклама и, по возможности, себестоимость, финансы, поставки, товары, отзывы).</li>
+      <li>Агент сам определяет тип файла и колонки по заголовкам. Проверьте определение и поправьте вручную, если нужно.</li>
+      <li>Данные объединяются по SKU. Показатели считаются только из того, что реально есть в файлах — никакие цифры не придумываются.</li>
+      <li>Если данных для расчёта не хватает, так и написано: «Недостаточно данных».</li>
+      <li>Действия с финансовым риском (цена, скидка, рекламный бюджет/ставка, поставка) никогда не выполняются автоматически — агент подключается к Ozon только на чтение (остатки, продажи) и не может ничего менять в личном кабинете. Он только готовит рекомендацию и ждёт вашего подтверждения в разделе «Решения».</li>
+    </ol>
+
+    <h2>Подключение к Ozon Seller API</h2>
+    <p>Ozon Seller API не поддерживает запросы напрямую из браузера (нет CORS) — это ограничение самого Ozon, а не этого инструмента. Поэтому нужен маленький бесплатный прокси-сервер, который просто пересылает запрос дальше и добавляет разрешающий заголовок. Ваш Client-Id и Api-Key при этом остаются только в вашем браузере и передаются напрямую в ваш собственный прокси и в Ozon — больше никуда.</p>
+    <ol>
+      <li>Зайдите на <a href="https://dash.cloudflare.com/" target="_blank" rel="noopener">dash.cloudflare.com</a>, зарегистрируйтесь (бесплатно) и откройте раздел «Workers & Pages» → «Create Worker».</li>
+      <li>Удалите код-заготовку и вставьте код из файла <code>agent/proxy/cloudflare-worker.js</code> этого репозитория (текст также ниже — можно скопировать прямо отсюда).</li>
+      <li>Нажмите «Deploy». Скопируйте адрес вида <code>https://ваш-воркер.workers.dev</code>.</li>
+      <li>Вставьте этот адрес, Client-Id и Api-Key (Настройки → API интеграции → Seller API в личном кабинете Ozon, тип токена — Admin) в блок «Подключение к Ozon Seller API» на вкладке «Загрузка данных» и нажмите «Проверить подключение».</li>
+    </ol>
+    <button class="btn btn-ghost btn-small" id="btn-show-proxy">Показать / скопировать код прокси-сервера</button>
+    <pre id="proxy-code" class="report-text" hidden></pre>
+    <p class="muted">Через API автоматически подтягиваются только остатки, названия товаров и продажи (аналитика Ozon). Себестоимость Ozon не хранит и API не отдаёт — вводите её файлом или вручную. Рекламу (Performance API) и финансовую детализацию пока тоже нужно грузить файлами — эти API устроены сложнее (отдельный ключ и асинхронные отчёты), и мы не хотим показывать вам числа, в правильности которых до конца не уверены.</p>
+    <p class="muted"><strong>Важный нюанс идентификаторов:</strong> в остатках Ozon использует ваш собственный артикул (offer_id), а в аналитике продаж — свой внутренний числовой SKU. Агент сам сопоставляет их через список товаров перед объединением; если сопоставить не удалось, он покажет внутренний ID Ozon и явно предупредит об этом в журнале загрузки, а не подставит данные наугад.</p>
+
+    <h2>Ожидаемые колонки по типам файлов</h2>
+    <div id="help-columns"></div>
+    <h2>Допущения по умолчанию</h2>
+    <p class="muted">Настраиваются кнопкой ⚙ в шапке. Везде, где допущение применено, это явно помечено в отчёте.</p>
+    <ul>
+      <li>Срок поставки не указан → риск дефицита считается при запасе менее 7 дней.</li>
+      <li>Порог избыточного запаса — более 60 дней продаж.</li>
+      <li>Падение выручки к прошлому периоду ≥ 20% — проблема; ≥ 40% — аутсайдер.</li>
+      <li>Рост выручки к прошлому периоду ≥ 15% — растущий товар.</li>
+      <li>Ухудшение ДРР ≥ 5 п.п. к прошлому периоду — сигнал по рекламе.</li>
+    </ul>
+  </section>
+
+</main>
+
+<!-- Settings modal -->
+<div class="modal-overlay" id="settings-overlay" hidden>
+  <div class="modal">
+    <h2>Настройки и допущения</h2>
+    <p class="muted">Это пороги по умолчанию, а не факты из ваших данных. Меняйте под свою экономику.</p>
+    <div class="settings-grid">
+      <label>Риск дефицита, дней запаса (если срок поставки неизвестен)<input type="number" id="set-lowstock" min="1"></label>
+      <label>Избыточный запас, дней продаж<input type="number" id="set-overstock" min="1"></label>
+      <label>Падение выручки — «проблемный», %<input type="number" id="set-decline-warn" min="1"></label>
+      <label>Падение выручки — «аутсайдер», %<input type="number" id="set-decline-bad" min="1"></label>
+      <label>Рост выручки — «растущий», %<input type="number" id="set-growth" min="1"></label>
+      <label>Ухудшение ДРР — сигнал, п.п.<input type="number" id="set-drr-degrade" min="1"></label>
+      <label>Целевая маржинальность по умолчанию, %<input type="number" id="set-target-margin" min="1"></label>
+      <label>Страховой запас при расчёте поставки, дней<input type="number" id="set-safety-days" min="0"></label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="btn-settings-reset">Сбросить по умолчанию</button>
+      <button class="btn btn-primary" id="btn-settings-save">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add decision modal -->
+<div class="modal-overlay" id="decision-overlay" hidden>
+  <div class="modal">
+    <h2 id="decision-modal-title">Решение</h2>
+    <div class="settings-grid" id="decision-form"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="btn-decision-cancel">Отмена</button>
+      <button class="btn btn-primary" id="btn-decision-save">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<script src="vendor/xlsx.full.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
