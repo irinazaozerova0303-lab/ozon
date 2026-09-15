@@ -35,6 +35,41 @@
     <h1>Загрузка данных</h1>
     <p class="muted">Минимум для отчёта: продажи, остатки, реклама. Для полной экономики добавьте себестоимость, финансы, поставки, товары и отзывы. Ничего не отправляется никуда — все файлы обрабатываются локально в вашем браузере.</p>
 
+    <div class="api-box" id="api-box">
+      <div class="api-box-head">
+        <h2>Подключение к Ozon Seller API <span class="opt">опционально — вместо ручной загрузки остатков и продаж</span></h2>
+        <button class="btn btn-ghost btn-small" id="btn-api-toggle" type="button">Настроить</button>
+      </div>
+      <div id="api-box-body" hidden>
+        <p class="muted">
+          У Ozon Seller API нет CORS — браузер не может обратиться к нему напрямую, поэтому нужен маленький прокси-сервер
+          (бесплатный Cloudflare Worker, разворачивается за 2 минуты, ключ передаётся только через него и не покидает ваш браузер и ваш прокси).
+          Подробности и код прокси — во вкладке «Справка». Реклама, себестоимость, финансы, поставки и отзывы через API пока не подтягиваются — грузите их файлами, как раньше.
+        </p>
+        <div class="settings-grid">
+          <label>Client-Id (Seller API)<input type="text" id="api-client-id" autocomplete="off" placeholder="123456"></label>
+          <label>Api-Key (Seller API)<input type="password" id="api-key" autocomplete="off" placeholder="xxxxxxxx-xxxx-..."></label>
+          <label>Адрес прокси-сервера<input type="text" id="api-proxy-url" autocomplete="off" placeholder="https://ваш-воркер.workers.dev"></label>
+        </div>
+        <div class="upload-controls" style="margin-top:12px;">
+          <button class="btn btn-ghost btn-small" id="btn-api-save">Сохранить ключи (только в этом браузере)</button>
+          <button class="btn btn-ghost btn-small" id="btn-api-test">Проверить подключение</button>
+        </div>
+        <div id="api-status" class="log"></div>
+        <div class="upload-controls" style="margin-top:6px;">
+          <label class="field">Дата с<input type="date" id="api-date-from"></label>
+          <label class="field">Дата по<input type="date" id="api-date-to"></label>
+          <button class="btn btn-ghost btn-small" data-api-pull="stocks" data-period="current">Остатки → текущий период</button>
+          <button class="btn btn-ghost btn-small" data-api-pull="products" data-period="current">Товары (названия) → текущий период</button>
+          <button class="btn btn-ghost btn-small" data-api-pull="sales" data-period="current">Продажи → текущий период</button>
+        </div>
+        <div class="upload-controls">
+          <button class="btn btn-ghost btn-small" data-api-pull="stocks" data-period="previous">Остатки → предыдущий период</button>
+          <button class="btn btn-ghost btn-small" data-api-pull="sales" data-period="previous">Продажи → предыдущий период</button>
+        </div>
+      </div>
+    </div>
+
     <div class="upload-grid">
       <div class="upload-zone" id="zone-current">
         <h2>Текущий период <span class="req">обязательно</span></h2>
@@ -159,8 +194,22 @@
       <li>Агент сам определяет тип файла и колонки по заголовкам. Проверьте определение и поправьте вручную, если нужно.</li>
       <li>Данные объединяются по SKU. Показатели считаются только из того, что реально есть в файлах — никакие цифры не придумываются.</li>
       <li>Если данных для расчёта не хватает, так и написано: «Недостаточно данных».</li>
-      <li>Действия с финансовым риском (цена, скидка, рекламный бюджет/ставка, поставка) никогда не выполняются автоматически — агент не подключён к личному кабинету Ozon и не может ничего там менять. Он только готовит рекомендацию и ждёт вашего подтверждения в разделе «Решения».</li>
+      <li>Действия с финансовым риском (цена, скидка, рекламный бюджет/ставка, поставка) никогда не выполняются автоматически — агент подключается к Ozon только на чтение (остатки, продажи) и не может ничего менять в личном кабинете. Он только готовит рекомендацию и ждёт вашего подтверждения в разделе «Решения».</li>
     </ol>
+
+    <h2>Подключение к Ozon Seller API</h2>
+    <p>Ozon Seller API не поддерживает запросы напрямую из браузера (нет CORS) — это ограничение самого Ozon, а не этого инструмента. Поэтому нужен маленький бесплатный прокси-сервер, который просто пересылает запрос дальше и добавляет разрешающий заголовок. Ваш Client-Id и Api-Key при этом остаются только в вашем браузере и передаются напрямую в ваш собственный прокси и в Ozon — больше никуда.</p>
+    <ol>
+      <li>Зайдите на <a href="https://dash.cloudflare.com/" target="_blank" rel="noopener">dash.cloudflare.com</a>, зарегистрируйтесь (бесплатно) и откройте раздел «Workers & Pages» → «Create Worker».</li>
+      <li>Удалите код-заготовку и вставьте код из файла <code>agent/proxy/cloudflare-worker.js</code> этого репозитория (текст также ниже — можно скопировать прямо отсюда).</li>
+      <li>Нажмите «Deploy». Скопируйте адрес вида <code>https://ваш-воркер.workers.dev</code>.</li>
+      <li>Вставьте этот адрес, Client-Id и Api-Key (Настройки → API интеграции → Seller API в личном кабинете Ozon, тип токена — Admin) в блок «Подключение к Ozon Seller API» на вкладке «Загрузка данных» и нажмите «Проверить подключение».</li>
+    </ol>
+    <button class="btn btn-ghost btn-small" id="btn-show-proxy">Показать / скопировать код прокси-сервера</button>
+    <pre id="proxy-code" class="report-text" hidden></pre>
+    <p class="muted">Через API автоматически подтягиваются только остатки, названия товаров и продажи (аналитика Ozon). Себестоимость Ozon не хранит и API не отдаёт — вводите её файлом или вручную. Рекламу (Performance API) и финансовую детализацию пока тоже нужно грузить файлами — эти API устроены сложнее (отдельный ключ и асинхронные отчёты), и мы не хотим показывать вам числа, в правильности которых до конца не уверены.</p>
+    <p class="muted"><strong>Важный нюанс идентификаторов:</strong> в остатках Ozon использует ваш собственный артикул (offer_id), а в аналитике продаж — свой внутренний числовой SKU. Агент сам сопоставляет их через список товаров перед объединением; если сопоставить не удалось, он покажет внутренний ID Ozon и явно предупредит об этом в журнале загрузки, а не подставит данные наугад.</p>
+
     <h2>Ожидаемые колонки по типам файлов</h2>
     <div id="help-columns"></div>
     <h2>Допущения по умолчанию</h2>

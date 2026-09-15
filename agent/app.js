@@ -263,6 +263,18 @@ async function addFiles(period, fileList){
   renderFileLists();
 }
 
+function pushApiEntry(period, label, type, canonicalRows, periodDaysHint, warnings){
+  const detection = { type, score:1, recognizedFields: Array.from(new Set(canonicalRows.flatMap(r=>Object.keys(r)))), hasSku:true };
+  queued[period] = queued[period].filter(i=> !(i.fromApi && i.apiType===type));
+  queued[period].push({
+    id: uid(), fileName: label, sheetName:'Ozon API', canonicalRows, headerRow: [],
+    detection, chosenType: type, fromApi:true, apiType: type, periodDaysHint,
+  });
+  renderFileLists();
+  log(`✅ ${label} — получено из Ozon API, строк: ${canonicalRows.length}.`);
+  (warnings||[]).forEach(w=> log('⚠️ ' + w, true));
+}
+
 function log(msg, isErr){
   const el = document.getElementById('upload-log');
   const line = document.createElement('div');
@@ -461,6 +473,7 @@ function buildDataset(period){
   queued[period].forEach(item=>{
     if(item.chosenType && item.chosenType!=='unknown'){
       mergeFile(ds, item.chosenType, item.canonicalRows);
+      if(item.periodDaysHint) ds.periodDaysHint = Math.max(ds.periodDaysHint||0, item.periodDaysHint);
     }
   });
   return ds;
@@ -469,7 +482,7 @@ function buildDataset(period){
 /* ---------- 6. РАСЧЁТ ПРОИЗВОДНЫХ ПОКАЗАТЕЛЕЙ ---------- */
 
 function computeDerived(ds){
-  const periodDays = ds.distinctDates.size > 0 ? ds.distinctDates.size : null;
+  const periodDays = Math.max(ds.distinctDates.size||0, ds.periodDaysHint||0) || null;
   const skus = Object.values(ds.skuMap);
   skus.forEach(rec=>{
     rec.assumptions = [];
@@ -849,6 +862,14 @@ function loadHistory(){
   catch(e){ return []; }
 }
 function saveHistory(){ localStorage.setItem('ozonAgent.decisions', JSON.stringify(HISTORY)); }
+function loadApiCreds(){
+  try{
+    const raw = localStorage.getItem('ozonAgent.apiCreds');
+    return raw ? JSON.parse(raw) : { clientId:'', apiKey:'', proxyUrl:'' };
+  }catch(e){ return { clientId:'', apiKey:'', proxyUrl:'' }; }
+}
+function saveApiCreds(){ localStorage.setItem('ozonAgent.apiCreds', JSON.stringify(API_CREDS)); }
+let API_CREDS = loadApiCreds();
 
 function process(){
   const currentRaw = buildDataset('current');
@@ -1148,7 +1169,173 @@ function openSettings(){
   document.getElementById('settings-overlay').hidden = false;
 }
 
-/* ---------- 14. ИНИЦИАЛИЗАЦИЯ ---------- */
+/* ---------- 14. OZON SELLER API (через прокси, см. agent/proxy/cloudflare-worker.js) ---------- */
+
+const OZON_API_TIMEOUT_MS = 20000;
+let SKU_ID_MAP = {}; // numeric Ozon SKU (string) -> offer_id (артикул продавца)
+
+function apiLog(msg, isErr){
+  const el = document.getElementById('api-status');
+  if(!el) return;
+  const line = document.createElement('div');
+  line.className = isErr ? 'log-err' : 'log-ok';
+  line.textContent = msg;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+async function ozonFetch(path, body){
+  if(!API_CREDS.proxyUrl) throw new Error('Не указан адрес прокси-сервера (см. вкладку «Справка»).');
+  if(!API_CREDS.clientId || !API_CREDS.apiKey) throw new Error('Не указаны Client-Id / Api-Key.');
+  const base = API_CREDS.proxyUrl.replace(/\/+$/,'');
+  const url = `${base}/seller/${path}`;
+  const controller = new AbortController();
+  const timer = setTimeout(()=> controller.abort(), OZON_API_TIMEOUT_MS);
+  let res;
+  try{
+    res = await fetch(url, {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'Client-Id':API_CREDS.clientId, 'Api-Key':API_CREDS.apiKey },
+      body: JSON.stringify(body||{}),
+      signal: controller.signal,
+    });
+  }catch(err){
+    if(err.name==='AbortError') throw new Error(`Превышено время ожидания (${OZON_API_TIMEOUT_MS/1000} c). Проверьте адрес прокси-сервера.`);
+    throw new Error(`Не удалось обратиться к прокси-серверу: ${err.message}. Проверьте, что адрес указан верно и воркер развёрнут.`);
+  }finally{
+    clearTimeout(timer);
+  }
+  const text = await res.text();
+  let json = null;
+  try{ json = text ? JSON.parse(text) : null; }catch(e){ /* не JSON — оставим text для сообщения об ошибке */ }
+  if(!res.ok){
+    const detail = (json && (json.message || json.code)) ? `${json.code||''} ${json.message||''}`.trim() : text.slice(0,300);
+    throw new Error(`Ozon API вернул ошибку ${res.status}: ${detail || 'без подробностей'}`);
+  }
+  return json;
+}
+
+async function testApiConnection(){
+  const el = document.getElementById('api-status');
+  el.innerHTML = '';
+  apiLog('Проверяю подключение…');
+  try{
+    await ozonFetch('v4/product/info/stocks', {filter:{visibility:'ALL'}, limit:1, cursor:''});
+    apiLog('✅ Подключение работает — Ozon ответил на запрос остатков.');
+  }catch(err){
+    apiLog('❌ ' + err.message, true);
+  }
+}
+
+// v3/product/list — список offer_id/product_id всего каталога (постранично через last_id).
+async function fetchAllOfferIds(){
+  const offerIds = [];
+  let lastId = '';
+  for(let page=0; page<20; page++){
+    const resp = await ozonFetch('v3/product/list', {filter:{visibility:'ALL'}, limit:1000, last_id:lastId});
+    const items = (resp && resp.result && resp.result.items) || [];
+    items.forEach(it=>{ if(it.offer_id) offerIds.push(it.offer_id); });
+    lastId = resp && resp.result && resp.result.last_id;
+    if(!lastId || items.length===0) break;
+  }
+  return offerIds;
+}
+
+// v2/product/info/list — название и числовые SKU (fbo/fbs) по списку offer_id, батчами.
+async function fetchProductInfoBatch(offerIds){
+  const items = [];
+  for(let i=0;i<offerIds.length;i+=100){
+    const batch = offerIds.slice(i,i+100);
+    const resp = await ozonFetch('v2/product/info/list', {offer_id:batch});
+    const respItems = (resp && resp.items) || (resp && resp.result && resp.result.items) || [];
+    items.push(...respItems);
+  }
+  return items;
+}
+
+function extractNumericSkus(item){
+  const ids = [];
+  ['sku','fbo_sku','fbs_sku'].forEach(f=>{ if(item[f]) ids.push(String(item[f])); });
+  if(Array.isArray(item.sources)){
+    item.sources.forEach(s=>{ if(s && s.sku) ids.push(String(s.sku)); });
+  }
+  return ids;
+}
+
+async function apiPullStocks(period){
+  apiLog(`Загружаю остатки (${period==='current'?'текущий':'предыдущий'} период)…`);
+  try{
+    const rows = [];
+    let cursor = '';
+    for(let page=0; page<20; page++){
+      const resp = await ozonFetch('v4/product/info/stocks', {filter:{visibility:'ALL'}, limit:1000, cursor});
+      const items = (resp && resp.items) || (resp && resp.result && resp.result.items) || [];
+      items.forEach(it=>{
+        if(!it.offer_id) return;
+        const present = sum((it.stocks||[]).map(s=>parseNumber(s.present)));
+        rows.push({sku: it.offer_id, stock: present});
+      });
+      cursor = resp && resp.cursor;
+      if(!cursor || items.length===0) break;
+    }
+    if(!rows.length){ apiLog('⚠️ Ozon вернул пустой список остатков.', true); return; }
+    pushApiEntry(period, `Остатки из Ozon API (${rows.length})`, 'stocks', rows);
+    apiLog(`✅ Остатки загружены: ${rows.length} SKU.`);
+  }catch(err){ apiLog('❌ ' + err.message, true); }
+}
+
+async function apiPullProducts(period){
+  apiLog(`Загружаю товары (${period==='current'?'текущий':'предыдущий'} период)…`);
+  try{
+    const offerIds = await fetchAllOfferIds();
+    if(!offerIds.length){ apiLog('⚠️ Ozon вернул пустой каталог товаров.', true); return; }
+    const infos = await fetchProductInfoBatch(offerIds);
+    const rows = [];
+    SKU_ID_MAP = {};
+    infos.forEach(item=>{
+      if(!item.offer_id) return;
+      rows.push({sku:item.offer_id, name:item.name||null});
+      extractNumericSkus(item).forEach(id=> SKU_ID_MAP[id] = item.offer_id);
+    });
+    pushApiEntry(period, `Товары из Ozon API (${rows.length})`, 'products', rows);
+    apiLog(`✅ Товары загружены: ${rows.length}. Сопоставление SKU для аналитики продаж обновлено.`);
+  }catch(err){ apiLog('❌ ' + err.message, true); }
+}
+
+async function apiPullSales(period, dateFrom, dateTo){
+  if(!dateFrom || !dateTo){ apiLog('❌ Укажите даты «с» и «по».', true); return; }
+  apiLog(`Загружаю продажи с ${dateFrom} по ${dateTo} (${period==='current'?'текущий':'предыдущий'} период)…`);
+  try{
+    if(!Object.keys(SKU_ID_MAP).length){
+      apiLog('Сопоставление SKU ещё не загружено — сначала подтягиваю список товаров…');
+      await apiPullProducts(period);
+    }
+    const metrics = ['revenue','ordered_units','returns','cancellations'];
+    const rows = [];
+    const warnings = [];
+    let offset = 0;
+    for(let page=0; page<20; page++){
+      const resp = await ozonFetch('v1/analytics/data', {date_from:dateFrom, date_to:dateTo, metrics, dimension:['sku'], limit:1000, offset});
+      const data = (resp && resp.result && resp.result.data) || [];
+      data.forEach(row=>{
+        const rawId = row.dimensions && row.dimensions[0] && String(row.dimensions[0].id);
+        if(!rawId) return;
+        const mapped = SKU_ID_MAP[rawId];
+        if(!mapped) warnings.push(`SKU не сопоставлен: внутренний ID Ozon ${rawId} — показан как есть, проверьте вручную.`);
+        const [revenue, orders, returns, cancellations] = row.metrics||[];
+        rows.push({sku: mapped||rawId, revenue, orders, returns, cancellations});
+      });
+      offset += 1000;
+      if(data.length < 1000) break;
+    }
+    if(!rows.length){ apiLog('⚠️ Ozon не вернул данных о продажах за указанный период.', true); return; }
+    const msFrom = new Date(dateFrom), msTo = new Date(dateTo);
+    const dayCount = Math.max(1, Math.round((msTo-msFrom)/86400000) + 1);
+    pushApiEntry(period, `Продажи из Ozon API (${rows.length})`, 'sales', rows, dayCount, warnings);
+  }catch(err){ apiLog('❌ ' + err.message, true); }
+}
+
+/* ---------- 15. ИНИЦИАЛИЗАЦИЯ ---------- */
 
 document.addEventListener('DOMContentLoaded', ()=>{
   document.getElementById('report-date').value = todayStr();
@@ -1169,6 +1356,52 @@ document.addEventListener('DOMContentLoaded', ()=>{
   }
   wireDropzone('zone-current','input-current','current');
   wireDropzone('zone-previous','input-previous','previous');
+
+  // Ozon API
+  document.getElementById('api-client-id').value = API_CREDS.clientId||'';
+  document.getElementById('api-key').value = API_CREDS.apiKey||'';
+  document.getElementById('api-proxy-url').value = API_CREDS.proxyUrl||'';
+  document.getElementById('api-date-from').value = todayStr();
+  document.getElementById('api-date-to').value = todayStr();
+  document.getElementById('btn-api-toggle').onclick = ()=>{
+    const body = document.getElementById('api-box-body');
+    body.hidden = !body.hidden;
+  };
+  document.getElementById('btn-api-save').onclick = ()=>{
+    API_CREDS = {
+      clientId: document.getElementById('api-client-id').value.trim(),
+      apiKey: document.getElementById('api-key').value.trim(),
+      proxyUrl: document.getElementById('api-proxy-url').value.trim(),
+    };
+    saveApiCreds();
+    apiLog('Ключи сохранены в этом браузере.');
+  };
+  document.getElementById('btn-api-test').onclick = testApiConnection;
+  document.querySelectorAll('[data-api-pull]').forEach(btn=>{
+    btn.onclick = ()=>{
+      const period = btn.dataset.period;
+      const kind = btn.dataset.apiPull;
+      const from = document.getElementById('api-date-from').value;
+      const to = document.getElementById('api-date-to').value;
+      if(kind==='stocks') apiPullStocks(period);
+      else if(kind==='products') apiPullProducts(period);
+      else if(kind==='sales') apiPullSales(period, from, to);
+    };
+  });
+  document.getElementById('btn-show-proxy').onclick = async ()=>{
+    const pre = document.getElementById('proxy-code');
+    if(pre.hidden){
+      if(!pre.textContent){
+        try{
+          const res = await fetch('proxy/cloudflare-worker.js');
+          pre.textContent = await res.text();
+        }catch(e){ pre.textContent = 'Не удалось загрузить файл. Откройте agent/proxy/cloudflare-worker.js в репозитории.'; }
+      }
+      pre.hidden = false;
+    } else {
+      pre.hidden = true;
+    }
+  };
 
   document.getElementById('btn-process').onclick = process;
   document.getElementById('btn-templates').onclick = downloadTemplates;
