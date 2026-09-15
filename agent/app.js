@@ -1388,6 +1388,25 @@ document.addEventListener('DOMContentLoaded', ()=>{
       else if(kind==='sales') apiPullSales(period, from, to);
     };
   });
+  document.getElementById('btn-api-refresh-all').onclick = async ()=>{
+    const btn = document.getElementById('btn-api-refresh-all');
+    const from = document.getElementById('api-date-from').value;
+    const to = document.getElementById('api-date-to').value;
+    btn.disabled = true;
+    const originalText = btn.textContent;
+    btn.textContent = 'Обновляю…';
+    document.getElementById('api-status').innerHTML = '';
+    try{
+      await apiPullStocks('current');
+      await apiPullProducts('current');
+      await apiPullSales('current', from, to);
+      apiLog('Данные обновлены — строю отчёт…');
+      process();
+    } finally {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  };
   document.getElementById('btn-show-proxy').onclick = async ()=>{
     const pre = document.getElementById('proxy-code');
     if(pre.hidden){
