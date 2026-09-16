@@ -75,8 +75,11 @@ export default {
       return new Response('Ошибка обращения к Ozon: ' + err.message, { status: 502, headers: cors });
     }
 
-    const bodyText = await ozonResponse.text();
-    return new Response(bodyText, {
+    // Пересылаем тело как бинарные байты, а не текст: некоторые ответы
+    // (например, отчёты Performance API) — это ZIP-архивы, и .text() их
+    // необратимо портит перекодировкой в UTF-8.
+    const bodyBuffer = await ozonResponse.arrayBuffer();
+    return new Response(bodyBuffer, {
       status: ozonResponse.status,
       headers: {
         ...cors,

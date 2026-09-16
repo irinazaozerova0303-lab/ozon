@@ -1608,6 +1608,73 @@ async function perfFetchText(path, method){
   return text;
 }
 
+async function perfFetchBinary(path, method){
+  const token = await getPerfToken(false);
+  if(!API_CREDS.proxyUrl) throw new Error('Не указан адрес прокси-сервера.');
+  const base = API_CREDS.proxyUrl.replace(/\/+$/,'');
+  const url = `${base}/performance/${path}`;
+  const controller = new AbortController();
+  const timer = setTimeout(()=> controller.abort(), OZON_API_TIMEOUT_MS);
+  let res;
+  try{
+    res = await fetch(url, { method: method||'GET', headers:{'Authorization':`Bearer ${token}`}, signal: controller.signal });
+  }catch(err){
+    if(err.name==='AbortError') throw new Error(`Превышено время ожидания (${OZON_API_TIMEOUT_MS/1000} c).`);
+    throw new Error(`Не удалось обратиться к прокси-серверу: ${err.message}`);
+  }finally{ clearTimeout(timer); }
+  if(!res.ok){ const t = await res.text(); throw new Error(`Performance API вернул ошибку ${res.status}: ${t.slice(0,300)}`); }
+  return await res.arrayBuffer();
+}
+
+// Минимальный разбор ZIP (без внешних библиотек): читает центральный
+// каталог с конца архива, затем для каждой записи находит локальный
+// заголовок и распаковывает данные (stored или deflate — через нативный
+// DecompressionStream). Ozon отдаёт отчёты Performance API в ZIP.
+async function unzipEntries(arrayBuffer){
+  const bytes = new Uint8Array(arrayBuffer);
+  const view = new DataView(arrayBuffer);
+  const maxBack = Math.min(bytes.length, 65557);
+  let eocd = -1;
+  for(let i=bytes.length-22; i>=bytes.length-maxBack; i--){
+    if(i<0) break;
+    if(view.getUint32(i, true) === 0x06054b50){ eocd = i; break; }
+  }
+  if(eocd<0) throw new Error('Не похоже на ZIP-архив (не найден конец центрального каталога).');
+  const entryCount = view.getUint16(eocd+10, true);
+  let p = view.getUint32(eocd+16, true);
+  const entries = [];
+  for(let i=0;i<entryCount;i++){
+    if(view.getUint32(p, true) !== 0x02014b50) throw new Error('Повреждён центральный каталог ZIP.');
+    const method = view.getUint16(p+10, true);
+    const compSize = view.getUint32(p+20, true);
+    const nameLen = view.getUint16(p+28, true);
+    const extraLen = view.getUint16(p+30, true);
+    const commentLen = view.getUint16(p+32, true);
+    const localOffset = view.getUint32(p+42, true);
+    const name = new TextDecoder().decode(bytes.subarray(p+46, p+46+nameLen));
+    entries.push({ name, method, compSize, localOffset });
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  const out = [];
+  for(const e of entries){
+    if(view.getUint32(e.localOffset, true) !== 0x04034b50) throw new Error(`Повреждён локальный заголовок ZIP для "${e.name}".`);
+    const lNameLen = view.getUint16(e.localOffset+26, true);
+    const lExtraLen = view.getUint16(e.localOffset+28, true);
+    const dataStart = e.localOffset + 30 + lNameLen + lExtraLen;
+    const compData = bytes.subarray(dataStart, dataStart+e.compSize);
+    let outBytes;
+    if(e.method===0){ outBytes = compData; }
+    else if(e.method===8){
+      const stream = new Blob([compData]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      outBytes = new Uint8Array(await new Response(stream).arrayBuffer());
+    } else {
+      throw new Error(`Неподдерживаемый метод сжатия в ZIP (${e.method}) для файла "${e.name}".`);
+    }
+    out.push({ name: e.name, text: new TextDecoder('utf-8').decode(outBytes) });
+  }
+  return out;
+}
+
 // Экспериментально: расход/показы/клики через асинхронный отчёт Ozon
 // (запрос → ожидание готовности → скачивание). Максимум 10 кампаний за
 // один запрос и один отчёт одновременно на аккаунт — поэтому активные
@@ -1645,11 +1712,22 @@ async function apiPullCampaignStats(period, dateFrom, dateTo){
         if(!statusResp || statusResp.state!=='OK'){ perfLog(`⚠️ Батч ${batchNum}: отчёт не успел подготовиться за отведённое время — попробуйте нажать ещё раз позже.`, true); continue; }
         const link = statusResp.link;
         if(!link){ perfLog(`⚠️ Батч ${batchNum}: Ozon подтвердил готовность, но не дал ссылку на отчёт.`, true); continue; }
-        const reportRaw = await perfFetchText(link.replace(/^\/+/, ''), 'GET');
-        perfLog(`Батч ${batchNum}: отчёт получен (${reportRaw.length} симв.). Первые 500 символов для сверки формата: ${reportRaw.slice(0,500)}`);
+        const buf = await perfFetchBinary(link.replace(/^\/+/, ''), 'GET');
+        const bytes = new Uint8Array(buf);
+        const isZip = bytes.length>=2 && bytes[0]===0x50 && bytes[1]===0x4B; // сигнатура "PK"
+        let files;
+        if(isZip){
+          files = await unzipEntries(buf);
+          perfLog(`Батч ${batchNum}: отчёт — ZIP-архив, файлов внутри: ${files.length} (${files.map(f=>f.name).join(', ')}).`);
+        } else {
+          files = [{ name:'report', text: new TextDecoder('utf-8').decode(bytes) }];
+        }
+        files.forEach(f=>{
+          perfLog(`Батч ${batchNum}, файл «${f.name}» (${f.text.length} симв.). Первые 800 символов для сверки формата: ${f.text.slice(0,800)}`);
+        });
       }catch(err){ perfLog(`❌ Батч ${batchNum}: ${err.message}`, true); }
     }
-    perfLog('Готово. Формат отчёта пока не разобран автоматически — пришлите, что показал журнал, доработаю извлечение расхода/показов/кликов по кампаниям.');
+    perfLog('Готово. Формат отчёта пока не разобран автоматически до цифр по кампаниям — пришлите, что показал журнал, доработаю извлечение расхода/показов/кликов.');
   }catch(err){ perfLog('❌ ' + err.message, true); }
 }
 
