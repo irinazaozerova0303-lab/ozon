@@ -871,6 +871,16 @@ function loadApiCreds(){
 function saveApiCreds(){ localStorage.setItem('ozonAgent.apiCreds', JSON.stringify(API_CREDS)); }
 let API_CREDS = loadApiCreds();
 
+function loadPerfCreds(){
+  try{
+    const raw = localStorage.getItem('ozonAgent.perfCreds');
+    return raw ? JSON.parse(raw) : { clientId:'', clientSecret:'' };
+  }catch(e){ return { clientId:'', clientSecret:'' }; }
+}
+function savePerfCreds(){ localStorage.setItem('ozonAgent.perfCreds', JSON.stringify(PERF_CREDS)); }
+let PERF_CREDS = loadPerfCreds();
+let PERF_TOKEN = null; // { accessToken, expiresAt } — в памяти, не сохраняется
+
 function process(){
   const currentRaw = buildDataset('current');
   if(!Object.keys(currentRaw.skuMap).length && !Object.keys(currentRaw.campaigns).length){
@@ -1486,6 +1496,97 @@ async function apiPullFinance(period, dateFrom, dateTo){
   }catch(err){ apiLog('❌ ' + err.message, true); }
 }
 
+/* ---------- 14b. OZON PERFORMANCE API (реклама, через тот же прокси) ---------- */
+
+function perfLog(msg, isErr){
+  const el = document.getElementById('perf-status');
+  if(!el) return;
+  const line = document.createElement('div');
+  line.className = isErr ? 'log-err' : 'log-ok';
+  line.textContent = msg;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+async function perfRawFetch(path, method, body, authHeader){
+  if(!API_CREDS.proxyUrl) throw new Error('Не указан адрес прокси-сервера (заполняется в блоке Seller API выше).');
+  const base = API_CREDS.proxyUrl.replace(/\/+$/,'');
+  const url = `${base}/performance/${path}`;
+  const controller = new AbortController();
+  const timer = setTimeout(()=> controller.abort(), OZON_API_TIMEOUT_MS);
+  const headers = {'Content-Type':'application/json'};
+  if(authHeader) headers['Authorization'] = authHeader;
+  let res;
+  try{
+    res = await fetch(url, { method, headers, body: body?JSON.stringify(body):undefined, signal: controller.signal });
+  }catch(err){
+    if(err.name==='AbortError') throw new Error(`Превышено время ожидания (${OZON_API_TIMEOUT_MS/1000} c).`);
+    throw new Error(`Не удалось обратиться к прокси-серверу: ${err.message}. Если недавно обновляли код воркера для Seller API — обновите его ещё раз (нужна версия с поддержкой /performance/).`);
+  }finally{ clearTimeout(timer); }
+  const text = await res.text();
+  let json = null;
+  try{ json = text ? JSON.parse(text) : null; }catch(e){}
+  if(!res.ok){
+    const detail = (json && (json.message || json.error || json.code)) ? `${json.code||json.error||''} ${json.message||''}`.trim() : text.slice(0,300);
+    throw new Error(`Performance API вернул ошибку ${res.status}: ${detail || 'без подробностей'}`);
+  }
+  return json;
+}
+
+async function getPerfToken(force){
+  if(!force && PERF_TOKEN && PERF_TOKEN.expiresAt > Date.now()+5000) return PERF_TOKEN.accessToken;
+  if(!PERF_CREDS.clientId || !PERF_CREDS.clientSecret) throw new Error('Не указаны Client-Id / Client-Secret для Performance API.');
+  const resp = await perfRawFetch('api/client/token', 'POST', {
+    client_id: PERF_CREDS.clientId, client_secret: PERF_CREDS.clientSecret, grant_type: 'client_credentials',
+  });
+  const token = resp && (resp.access_token || resp.accessToken);
+  if(!token) throw new Error('Ozon не вернул токен доступа (Performance API) — проверьте Client-Id/Client-Secret.');
+  const expiresInSec = (resp && (resp.expires_in || resp.expiresIn)) || 1800;
+  PERF_TOKEN = { accessToken: token, expiresAt: Date.now() + expiresInSec*1000 };
+  return token;
+}
+
+async function perfFetch(path, method, body){
+  const token = await getPerfToken(false);
+  return perfRawFetch(path, method||'GET', body, `Bearer ${token}`);
+}
+
+async function testPerfConnection(){
+  const el = document.getElementById('perf-status');
+  el.innerHTML = '';
+  perfLog('Проверяю подключение к Performance API…');
+  try{
+    await getPerfToken(true);
+    perfLog('✅ Токен получен — ключи верны.');
+  }catch(err){ perfLog('❌ ' + err.message, true); }
+}
+
+const CAMPAIGN_STATE_LABELS = {
+  CAMPAIGN_STATE_RUNNING: 'идёт',
+  CAMPAIGN_STATE_PLANNED: 'запланирована',
+  CAMPAIGN_STATE_STOPPED: 'остановлена',
+  CAMPAIGN_STATE_INACTIVE: 'неактивна',
+  CAMPAIGN_STATE_ARCHIVED: 'в архиве',
+  CAMPAIGN_STATE_MODERATION_DRAFT: 'черновик',
+  CAMPAIGN_STATE_FINISHED: 'завершена',
+};
+
+async function apiPullCampaignsList(period){
+  perfLog(`Загружаю список кампаний (${period==='current'?'текущий':'предыдущий'} период)…`);
+  try{
+    const resp = await perfFetch('api/client/campaign', 'GET');
+    const items = (resp && resp.list) || (resp && resp.campaigns) || (resp && resp.result) || [];
+    if(!Array.isArray(items) || !items.length){ perfLog('⚠️ Ozon не вернул ни одной кампании.', true); return; }
+    perfLog(`✅ Кампаний найдено: ${items.length}.`);
+    items.forEach(c=>{
+      const state = CAMPAIGN_STATE_LABELS[c.state] || c.state || '—';
+      const budget = c.dailyBudget!=null ? `дневной бюджет ${fmtMoney(parseNumber(c.dailyBudget)/1000000)}` : (c.budget!=null ? `бюджет ${fmtMoney(parseNumber(c.budget)/1000000)}` : 'бюджет не указан');
+      perfLog(`• ${c.title||c.id} — ${state}, ${budget}`);
+    });
+    perfLog('Расходы и заказы по кампаниям пока не подтягиваются — это следующий шаг (асинхронный отчёт Ozon).');
+  }catch(err){ perfLog('❌ ' + err.message, true); }
+}
+
 /* ---------- 15. ИНИЦИАЛИЗАЦИЯ ---------- */
 
 document.addEventListener('DOMContentLoaded', ()=>{
@@ -1514,6 +1615,19 @@ document.addEventListener('DOMContentLoaded', ()=>{
   document.getElementById('api-proxy-url').value = API_CREDS.proxyUrl||'';
   document.getElementById('api-date-from').value = todayStr();
   document.getElementById('api-date-to').value = todayStr();
+  document.getElementById('perf-client-id').value = PERF_CREDS.clientId||'';
+  document.getElementById('perf-client-secret').value = PERF_CREDS.clientSecret||'';
+  document.getElementById('btn-perf-save').onclick = ()=>{
+    PERF_CREDS = {
+      clientId: document.getElementById('perf-client-id').value.trim(),
+      clientSecret: document.getElementById('perf-client-secret').value.trim(),
+    };
+    PERF_TOKEN = null;
+    savePerfCreds();
+    perfLog('Ключи Performance API сохранены в этом браузере.');
+  };
+  document.getElementById('btn-perf-test').onclick = testPerfConnection;
+  document.getElementById('btn-perf-campaigns').onclick = ()=> apiPullCampaignsList('current');
   document.getElementById('btn-api-toggle').onclick = ()=>{
     const body = document.getElementById('api-box-body');
     body.hidden = !body.hidden;
