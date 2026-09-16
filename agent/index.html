@@ -44,7 +44,7 @@
         <p class="muted">
           У Ozon Seller API нет CORS — браузер не может обратиться к нему напрямую, поэтому нужен маленький прокси-сервер
           (бесплатный Cloudflare Worker, разворачивается за 2 минуты, ключ передаётся только через него и не покидает ваш браузер и ваш прокси).
-          Подробности и код прокси — во вкладке «Справка». Реклама, себестоимость, финансы, поставки и отзывы через API пока не подтягиваются — грузите их файлами, как раньше.
+          Подробности и код прокси — во вкладке «Справка». Финансы (приблизительно) и отзывы теперь тоже можно подтянуть. Реклама (свой ключ) и себестоимость (Ozon её не хранит) — пока только файлом.
         </p>
         <div class="settings-grid">
           <label>Client-Id (Seller API)<input type="text" id="api-client-id" autocomplete="off" placeholder="123456"></label>
@@ -66,7 +66,10 @@
           <button class="btn btn-ghost btn-small" data-api-pull="stocks" data-period="current">Остатки → текущий период</button>
           <button class="btn btn-ghost btn-small" data-api-pull="products" data-period="current">Товары (названия) → текущий период</button>
           <button class="btn btn-ghost btn-small" data-api-pull="sales" data-period="current">Продажи → текущий период</button>
+          <button class="btn btn-ghost btn-small" data-api-pull="finance" data-period="current">Финансы → текущий период</button>
+          <button class="btn btn-ghost btn-small" data-api-pull="reviews" data-period="current">Отзывы → текущий период</button>
         </div>
+        <p class="muted" style="margin:6px 0 0;">Финансы — приблизительная разбивка по статьям (не бухгалтерская проводка). Отзывы могут быть недоступны, если у вас не тариф Premium/Premium Plus.</p>
         <div class="upload-controls">
           <button class="btn btn-ghost btn-small" data-api-pull="stocks" data-period="previous">Остатки → предыдущий период</button>
           <button class="btn btn-ghost btn-small" data-api-pull="sales" data-period="previous">Продажи → предыдущий период</button>
@@ -211,7 +214,7 @@
     </ol>
     <button class="btn btn-ghost btn-small" id="btn-show-proxy">Показать / скопировать код прокси-сервера</button>
     <pre id="proxy-code" class="report-text" hidden></pre>
-    <p class="muted">Через API автоматически подтягиваются только остатки, названия товаров и продажи (аналитика Ozon). Себестоимость Ozon не хранит и API не отдаёт — вводите её файлом или вручную. Рекламу (Performance API) и финансовую детализацию пока тоже нужно грузить файлами — эти API устроены сложнее (отдельный ключ и асинхронные отчёты), и мы не хотим показывать вам числа, в правильности которых до конца не уверены.</p>
+    <p class="muted">Через API автоматически подтягиваются остатки, названия товаров, продажи (аналитика Ozon), финансовые операции и отзывы. Себестоимость Ozon не хранит и API не отдаёт — вводите её файлом или вручную. Разбивка финансов по статьям (комиссия/логистика/хранение) — приблизительная категоризация по названию операции в выписке Ozon, а не бухгалтерская проводка; сверяйте с отчётом Ozon при существенных расхождениях. Отзывы через API доступны не на всех тарифах Ozon. Рекламу (Performance API) пока нужно грузить файлом — там отдельный ключ и более сложная схема отчётов.</p>
     <p class="muted"><strong>Важный нюанс идентификаторов:</strong> в остатках Ozon использует ваш собственный артикул (offer_id), а в аналитике продаж — свой внутренний числовой SKU. Агент сам сопоставляет их через список товаров перед объединением; если сопоставить не удалось, он покажет внутренний ID Ozon и явно предупредит об этом в журнале загрузки, а не подставит данные наугад.</p>
 
     <h2>Ожидаемые колонки по типам файлов</h2>

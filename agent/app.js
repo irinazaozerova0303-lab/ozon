@@ -1380,6 +1380,112 @@ async function apiPullSales(period, dateFrom, dateTo){
   }catch(err){ apiLog('❌ ' + err.message, true); }
 }
 
+async function apiPullReviews(period){
+  apiLog(`Загружаю отзывы (${period==='current'?'текущий':'предыдущий'} период)…`);
+  try{
+    if(!Object.keys(SKU_ID_MAP).length){
+      apiLog('Сопоставление SKU ещё не загружено — сначала подтягиваю список товаров…');
+      await apiPullProducts(period);
+    }
+    const items = [];
+    let lastId = '';
+    for(let page=0; page<20; page++){
+      const {data:resp} = await ozonFetchAny(['v1/review/list'], {limit:100, last_id:lastId, sort_dir:'DESC'});
+      const pageItems = (resp && resp.reviews) || (resp && resp.result && resp.result.reviews) || [];
+      items.push(...pageItems);
+      lastId = (resp && resp.last_id) || (resp && resp.result && resp.result.last_id) || '';
+      if(!lastId || pageItems.length===0) break;
+    }
+    if(!items.length){ apiLog('⚠️ Ozon не вернул отзывов — либо их правда нет за этот период, либо метод недоступен на вашем тарифе (нужен Premium/Premium Plus).', true); return; }
+    const bySku = {};
+    const warnings = [];
+    items.forEach(it=>{
+      const rawId = it.sku!=null ? String(it.sku) : (it.product_id!=null ? String(it.product_id) : null);
+      if(!rawId) return;
+      const mapped = SKU_ID_MAP[rawId];
+      if(!mapped && !warnings.some(w=>w.includes(rawId))) warnings.push(`Отзыв на несопоставленный SKU: внутренний ID Ozon ${rawId} — показан как есть.`);
+      const sku = mapped || rawId;
+      const rating = parseNumber(it.rating ?? it.score ?? it.grade ?? it.stars);
+      if(!bySku[sku]) bySku[sku] = {sum:0, count:0, total:0};
+      bySku[sku].total += 1;
+      if(rating!=null){ bySku[sku].sum += rating; bySku[sku].count += 1; }
+    });
+    const rows = Object.keys(bySku).map(sku=>({
+      sku,
+      rating: bySku[sku].count ? +(bySku[sku].sum/bySku[sku].count).toFixed(2) : null,
+      reviewsCount: bySku[sku].total,
+    }));
+    pushApiEntry(period, `Отзывы из Ozon API (${items.length} шт., ${rows.length} SKU)`, 'reviews', rows, null, warnings);
+    apiLog(`✅ Отзывы загружены: ${items.length} шт. по ${rows.length} SKU.`);
+  }catch(err){ apiLog('❌ ' + err.message + ' — возможно, метод отзывов недоступен на вашем тарифе Ozon.', true); }
+}
+
+const FINANCE_KEYWORDS = {
+  commission: ['комисс','commission','agent'],
+  logistics: ['логист','logistic','delivery','доставк','перевозк'],
+  storage: ['хранен','storage'],
+};
+function categorizeFinanceLine(name){
+  const n = normalize(name);
+  for(const cat in FINANCE_KEYWORDS){
+    if(FINANCE_KEYWORDS[cat].some(k=> n.includes(normalize(k)))) return cat;
+  }
+  return 'other';
+}
+
+// Разбивка по статьям — приблизительная категоризация по названию операции
+// в выписке Ozon, а не бухгалтерская проводка. Явно помечается допущением.
+async function apiPullFinance(period, dateFrom, dateTo){
+  if(!dateFrom || !dateTo){ apiLog('❌ Укажите даты «с» и «по».', true); return; }
+  apiLog(`Загружаю финансы с ${dateFrom} по ${dateTo} (${period==='current'?'текущий':'предыдущий'} период)…`);
+  try{
+    if(!Object.keys(SKU_ID_MAP).length){
+      apiLog('Сопоставление SKU ещё не загружено — сначала подтягиваю список товаров…');
+      await apiPullProducts(period);
+    }
+    const bySku = {};
+    const warnings = [];
+    let page = 1;
+    for(let p=0; p<20; p++){
+      const resp = await ozonFetch('v3/finance/transaction/list', {
+        filter: { date: {from: dateFrom+'T00:00:00.000Z', to: dateTo+'T23:59:59.999Z'}, transaction_type:'all' },
+        page, page_size: 1000,
+      });
+      const ops = (resp && resp.result && resp.result.operations) || [];
+      ops.forEach(op=>{
+        const rawIds = (op.items||[]).map(it=> it.sku!=null ? String(it.sku) : null).filter(Boolean);
+        rawIds.forEach(id=>{ if(!SKU_ID_MAP[id] && !warnings.some(w=>w.includes(id))) warnings.push(`Операция на несопоставленный SKU: внутренний ID Ozon ${id} — показан как есть.`); });
+        const targets = rawIds.length ? rawIds.map(id=> SKU_ID_MAP[id]||id) : null;
+        if(!targets) return; // операцию нельзя привязать ни к одному SKU — пропускаем, а не гадаем
+        const lines = [];
+        if(op.sale_commission){ lines.push({name:'commission', amount:-Math.abs(parseNumber(op.sale_commission)||0)}); }
+        (op.services||[]).forEach(s=> lines.push({name:s.name||'', amount: parseNumber(s.price)}));
+        lines.forEach(line=>{
+          const amt = Math.abs(line.amount||0);
+          if(!amt) return;
+          const cat = line.name==='commission' ? 'commission' : categorizeFinanceLine(line.name);
+          const share = amt / targets.length;
+          targets.forEach(sku=>{
+            if(!bySku[sku]) bySku[sku] = {commission:0, logistics:0, storage:0, otherExpenses:0};
+            if(cat==='commission') bySku[sku].commission += share;
+            else if(cat==='logistics') bySku[sku].logistics += share;
+            else if(cat==='storage') bySku[sku].storage += share;
+            else bySku[sku].otherExpenses += share;
+          });
+        });
+      });
+      const pageCount = resp && resp.result && resp.result.page_count;
+      page += 1;
+      if(!pageCount || page > pageCount) break;
+    }
+    const rows = Object.keys(bySku).map(sku=>({sku, ...bySku[sku]}));
+    if(!rows.length){ apiLog('⚠️ Ozon не вернул финансовых операций за период (или ни одну не удалось привязать к SKU).', true); return; }
+    warnings.push('Разбивка на комиссию/логистику/хранение — приблизительная категоризация по названию операции в выписке Ozon, не бухгалтерская проводка.');
+    pushApiEntry(period, `Финансы из Ozon API (${rows.length} SKU, приблизительно)`, 'finance', rows, null, warnings);
+    apiLog(`✅ Финансы загружены: ${rows.length} SKU. Разбивка по статьям приблизительная — сверяйте при сомнениях.`);
+  }catch(err){ apiLog('❌ ' + err.message, true); }
+}
+
 /* ---------- 15. ИНИЦИАЛИЗАЦИЯ ---------- */
 
 document.addEventListener('DOMContentLoaded', ()=>{
@@ -1431,6 +1537,8 @@ document.addEventListener('DOMContentLoaded', ()=>{
       if(kind==='stocks') apiPullStocks(period);
       else if(kind==='products') apiPullProducts(period);
       else if(kind==='sales') apiPullSales(period, from, to);
+      else if(kind==='finance') apiPullFinance(period, from, to);
+      else if(kind==='reviews') apiPullReviews(period);
     };
   });
   document.getElementById('btn-api-refresh-all').onclick = async ()=>{
