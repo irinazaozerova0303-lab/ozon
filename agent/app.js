@@ -1681,6 +1681,39 @@ async function unzipEntries(arrayBuffer){
 // кампании обрабатываются батчами по 10, последовательно. Точный формат
 // готового отчёта (JSON/CSV, названия колонок) не подтверждён — сырой
 // ответ показывается в журнале, чтобы можно было доработать разбор.
+// Разбор CSV-отчёта Performance API (внутри ZIP, один файл на кампанию).
+// Формат подтверждён на реальном аккаунте: заголовок начинается с
+// "День;sku;...", строки по каждому SKU за день, и итоговая строка
+// "Всего;..." в конце файла, которую пропускаем, чтобы не задвоить суммы.
+function parsePerfReportCsv(text){
+  const lines = text.split(/\r?\n/);
+  let headerIdx = -1;
+  for(let i=0;i<lines.length;i++){
+    if(/^день;sku/i.test(lines[i].trim())){ headerIdx = i; break; }
+  }
+  if(headerIdx<0) return [];
+  const rows = [];
+  for(let i=headerIdx+1;i<lines.length;i++){
+    const line = lines[i];
+    if(!line || !line.trim()) continue;
+    const f = line.split(';');
+    if(!f[0] || f[0].trim().toLowerCase()==='всего') continue;
+    const rawSku = (f[1]||'').trim();
+    if(!rawSku) continue;
+    rows.push({
+      rawSku,
+      name: f[2],
+      impressions: parseNumber(f[4]),
+      clicks: parseNumber(f[5]),
+      cpc: parseNumber(f[8]),
+      adSpend: parseNumber(f[9]),
+      adOrders: parseNumber(f[10]),
+      adRevenue: parseNumber(f[11]),
+    });
+  }
+  return rows;
+}
+
 async function apiPullCampaignStats(period, dateFrom, dateTo){
   if(!dateFrom || !dateTo){ perfLog('❌ Укажите даты «с» и «по» (поля рядом с кнопками Seller API выше).', true); return; }
   try{
@@ -1690,7 +1723,13 @@ async function apiPullCampaignStats(period, dateFrom, dateTo){
     }
     const active = PERF_CAMPAIGNS_CACHE.filter(c=> c.state==='CAMPAIGN_STATE_RUNNING');
     if(!active.length){ perfLog('⚠️ Нет кампаний со статусом «идёт» — расход считать не по чему.', true); return; }
+    if(!Object.keys(SKU_ID_MAP).length){
+      perfLog('Сопоставление SKU ещё не загружено — сначала подтягиваю список товаров…');
+      await apiPullProducts(period);
+    }
     perfLog(`Активных кампаний: ${active.length}. Запрашиваю статистику батчами по 10 — Ozon строит отчёт асинхронно, это может занять несколько минут, не закрывайте вкладку.`);
+    const allRows = [];
+    const warnings = [];
     for(let i=0;i<active.length;i+=10){
       const batch = active.slice(i,i+10).map(c=>String(c.id));
       const batchNum = Math.floor(i/10)+1;
@@ -1723,11 +1762,31 @@ async function apiPullCampaignStats(period, dateFrom, dateTo){
           files = [{ name:'report', text: new TextDecoder('utf-8').decode(bytes) }];
         }
         files.forEach(f=>{
-          perfLog(`Батч ${batchNum}, файл «${f.name}» (${f.text.length} симв.). Первые 800 символов для сверки формата: ${f.text.slice(0,800)}`);
+          const numMatch = f.name.match(/^(\d+)_/);
+          const campaignId = numMatch ? numMatch[1] : null;
+          const known = campaignId ? active.find(c=>String(c.id)===campaignId) : null;
+          const campaignName = known ? known.title : (campaignId ? `Кампания ${campaignId}` : f.name);
+          const parsed = parsePerfReportCsv(f.text);
+          if(!parsed.length){
+            perfLog(`⚠️ Батч ${batchNum}, файл «${f.name}»: не удалось распознать формат — сырой текст (первые 500 симв.): ${f.text.slice(0,500)}`, true);
+            return;
+          }
+          parsed.forEach(r=>{
+            const mapped = SKU_ID_MAP[r.rawSku];
+            if(!mapped && !warnings.some(w=>w.includes(r.rawSku))) warnings.push(`Реклама на несопоставленный SKU: внутренний ID Ozon ${r.rawSku} — показан как есть.`);
+            allRows.push({
+              campaign: campaignName, sku: mapped||r.rawSku,
+              impressions: r.impressions, clicks: r.clicks, cpc: r.cpc,
+              adSpend: r.adSpend, adOrders: r.adOrders, adRevenue: r.adRevenue,
+            });
+          });
+          perfLog(`Батч ${batchNum}, «${campaignName}»: строк по SKU — ${parsed.length}.`);
         });
       }catch(err){ perfLog(`❌ Батч ${batchNum}: ${err.message}`, true); }
     }
-    perfLog('Готово. Формат отчёта пока не разобран автоматически до цифр по кампаниям — пришлите, что показал журнал, доработаю извлечение расхода/показов/кликов.');
+    if(!allRows.length){ perfLog('⚠️ Не удалось получить ни одной строки статистики.', true); return; }
+    pushApiEntry(period, `Реклама из Ozon API (${allRows.length} строк)`, 'advertising', allRows, null, warnings);
+    perfLog(`✅ Готово: ${allRows.length} строк по рекламе добавлено в текущий период. Нажмите «Обновить всё» или «Обработать данные», чтобы пересчитать отчёт.`);
   }catch(err){ perfLog('❌ ' + err.message, true); }
 }
 
