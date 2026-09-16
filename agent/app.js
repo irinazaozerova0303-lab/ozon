@@ -1518,6 +1518,11 @@ document.addEventListener('DOMContentLoaded', ()=>{
     const body = document.getElementById('api-box-body');
     body.hidden = !body.hidden;
   };
+  document.getElementById('btn-api-today').onclick = ()=>{
+    const today = todayStr();
+    document.getElementById('api-date-from').value = today;
+    document.getElementById('api-date-to').value = today;
+  };
   document.getElementById('btn-api-save').onclick = ()=>{
     API_CREDS = {
       clientId: document.getElementById('api-client-id').value.trim(),
@@ -1543,8 +1548,12 @@ document.addEventListener('DOMContentLoaded', ()=>{
   });
   document.getElementById('btn-api-refresh-all').onclick = async ()=>{
     const btn = document.getElementById('btn-api-refresh-all');
-    const from = document.getElementById('api-date-from').value;
-    const to = document.getElementById('api-date-to').value;
+    // «Обновить всё» всегда берёт сегодняшний день, а не то, что случайно
+    // осталось в полях «Дата с/по» после точечной догрузки другого периода.
+    const today = todayStr();
+    document.getElementById('api-date-from').value = today;
+    document.getElementById('api-date-to').value = today;
+    const from = today, to = today;
     btn.disabled = true;
     const originalText = btn.textContent;
     btn.textContent = 'Обновляю…';
