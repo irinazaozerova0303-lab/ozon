@@ -1571,19 +1571,85 @@ const CAMPAIGN_STATE_LABELS = {
   CAMPAIGN_STATE_FINISHED: 'завершена',
 };
 
+let PERF_CAMPAIGNS_CACHE = [];
+
 async function apiPullCampaignsList(period){
   perfLog(`Загружаю список кампаний (${period==='current'?'текущий':'предыдущий'} период)…`);
   try{
     const resp = await perfFetch('api/client/campaign', 'GET');
     const items = (resp && resp.list) || (resp && resp.campaigns) || (resp && resp.result) || [];
     if(!Array.isArray(items) || !items.length){ perfLog('⚠️ Ozon не вернул ни одной кампании.', true); return; }
+    PERF_CAMPAIGNS_CACHE = items;
     perfLog(`✅ Кампаний найдено: ${items.length}.`);
     items.forEach(c=>{
       const state = CAMPAIGN_STATE_LABELS[c.state] || c.state || '—';
       const budget = c.dailyBudget!=null ? `дневной бюджет ${fmtMoney(parseNumber(c.dailyBudget)/1000000)}` : (c.budget!=null ? `бюджет ${fmtMoney(parseNumber(c.budget)/1000000)}` : 'бюджет не указан');
       perfLog(`• ${c.title||c.id} — ${state}, ${budget}`);
     });
-    perfLog('Расходы и заказы по кампаниям пока не подтягиваются — это следующий шаг (асинхронный отчёт Ozon).');
+  }catch(err){ perfLog('❌ ' + err.message, true); }
+}
+
+async function perfFetchText(path, method){
+  const token = await getPerfToken(false);
+  if(!API_CREDS.proxyUrl) throw new Error('Не указан адрес прокси-сервера.');
+  const base = API_CREDS.proxyUrl.replace(/\/+$/,'');
+  const url = `${base}/performance/${path}`;
+  const controller = new AbortController();
+  const timer = setTimeout(()=> controller.abort(), OZON_API_TIMEOUT_MS);
+  let res;
+  try{
+    res = await fetch(url, { method: method||'GET', headers:{'Authorization':`Bearer ${token}`}, signal: controller.signal });
+  }catch(err){
+    if(err.name==='AbortError') throw new Error(`Превышено время ожидания (${OZON_API_TIMEOUT_MS/1000} c).`);
+    throw new Error(`Не удалось обратиться к прокси-серверу: ${err.message}`);
+  }finally{ clearTimeout(timer); }
+  const text = await res.text();
+  if(!res.ok) throw new Error(`Performance API вернул ошибку ${res.status}: ${text.slice(0,300)}`);
+  return text;
+}
+
+// Экспериментально: расход/показы/клики через асинхронный отчёт Ozon
+// (запрос → ожидание готовности → скачивание). Максимум 10 кампаний за
+// один запрос и один отчёт одновременно на аккаунт — поэтому активные
+// кампании обрабатываются батчами по 10, последовательно. Точный формат
+// готового отчёта (JSON/CSV, названия колонок) не подтверждён — сырой
+// ответ показывается в журнале, чтобы можно было доработать разбор.
+async function apiPullCampaignStats(period, dateFrom, dateTo){
+  if(!dateFrom || !dateTo){ perfLog('❌ Укажите даты «с» и «по» (поля рядом с кнопками Seller API выше).', true); return; }
+  try{
+    if(!PERF_CAMPAIGNS_CACHE.length){
+      perfLog('Список кампаний ещё не загружен — сначала подтягиваю его…');
+      await apiPullCampaignsList(period);
+    }
+    const active = PERF_CAMPAIGNS_CACHE.filter(c=> c.state==='CAMPAIGN_STATE_RUNNING');
+    if(!active.length){ perfLog('⚠️ Нет кампаний со статусом «идёт» — расход считать не по чему.', true); return; }
+    perfLog(`Активных кампаний: ${active.length}. Запрашиваю статистику батчами по 10 — Ozon строит отчёт асинхронно, это может занять несколько минут, не закрывайте вкладку.`);
+    for(let i=0;i<active.length;i+=10){
+      const batch = active.slice(i,i+10).map(c=>String(c.id));
+      const batchNum = Math.floor(i/10)+1;
+      perfLog(`Батч ${batchNum}: запрашиваю отчёт по ${batch.length} кампани${batch.length===1?'и':'ям'}…`);
+      try{
+        const gen = await perfFetch('api/client/statistics', 'POST', {
+          campaigns: batch, from: dateFrom+'T00:00:00Z', to: dateTo+'T23:59:59Z', groupBy: 'DATE',
+        });
+        const uuid = gen && gen.UUID;
+        if(!uuid){ perfLog(`❌ Батч ${batchNum}: Ozon не вернул UUID отчёта.`, true); continue; }
+        let statusResp = null;
+        for(let attempt=1; attempt<=18; attempt++){
+          await sleep(5000);
+          statusResp = await perfFetch(`api/client/statistics/${uuid}`, 'GET');
+          if(statusResp && statusResp.state==='OK') break;
+          if(statusResp && /ERROR|FAIL/i.test(statusResp.state||'')) throw new Error('Ozon сообщил об ошибке построения отчёта: ' + statusResp.state);
+          perfLog(`  … батч ${batchNum}: отчёт ещё готовится (попытка ${attempt}/18)`);
+        }
+        if(!statusResp || statusResp.state!=='OK'){ perfLog(`⚠️ Батч ${batchNum}: отчёт не успел подготовиться за отведённое время — попробуйте нажать ещё раз позже.`, true); continue; }
+        const link = statusResp.link;
+        if(!link){ perfLog(`⚠️ Батч ${batchNum}: Ozon подтвердил готовность, но не дал ссылку на отчёт.`, true); continue; }
+        const reportRaw = await perfFetchText(link.replace(/^\/+/, ''), 'GET');
+        perfLog(`Батч ${batchNum}: отчёт получен (${reportRaw.length} симв.). Первые 500 символов для сверки формата: ${reportRaw.slice(0,500)}`);
+      }catch(err){ perfLog(`❌ Батч ${batchNum}: ${err.message}`, true); }
+    }
+    perfLog('Готово. Формат отчёта пока не разобран автоматически — пришлите, что показал журнал, доработаю извлечение расхода/показов/кликов по кампаниям.');
   }catch(err){ perfLog('❌ ' + err.message, true); }
 }
 
@@ -1628,6 +1694,11 @@ document.addEventListener('DOMContentLoaded', ()=>{
   };
   document.getElementById('btn-perf-test').onclick = testPerfConnection;
   document.getElementById('btn-perf-campaigns').onclick = ()=> apiPullCampaignsList('current');
+  document.getElementById('btn-perf-stats').onclick = ()=>{
+    const from = document.getElementById('api-date-from').value;
+    const to = document.getElementById('api-date-to').value;
+    apiPullCampaignStats('current', from, to);
+  };
   document.getElementById('btn-api-toggle').onclick = ()=>{
     const body = document.getElementById('api-box-body');
     body.hidden = !body.hidden;
