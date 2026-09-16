@@ -1153,6 +1153,23 @@ function downloadTemplates(){
   XLSX.writeFile(wb, 'ozon-agent-shablony.xlsx');
 }
 
+// Выгружает реальные SKU/названия из уже загруженных данных (а не из
+// придуманного примера) — колонка "Себестоимость" остаётся пустой, чтобы
+// владелец магазина сам её заполнил без риска опечататься в артикуле.
+function downloadCostTemplate(){
+  if(!STATE.current || !Object.keys(STATE.current.skuMap).length){
+    alert('Сначала загрузите остатки/товары и нажмите «Обработать данные», чтобы список SKU был доступен.');
+    return;
+  }
+  const skus = Object.values(STATE.current.skuMap).sort((a,b)=> String(a.sku).localeCompare(String(b.sku)));
+  const header = ['SKU','Название','Себестоимость'];
+  const rows = skus.map(s=>[s.sku, s.name||'', s.cost!=null?s.cost:'']);
+  const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Себестоимость');
+  XLSX.writeFile(wb, `ozon-sebestoimost-${STATE.dateStr}.xlsx`);
+}
+
 /* ---------- 13. ВКЛАДКИ / МОДАЛКИ ---------- */
 
 function switchTab(name){
@@ -1910,6 +1927,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
   document.getElementById('btn-process').onclick = process;
   document.getElementById('btn-templates').onclick = downloadTemplates;
+  document.getElementById('btn-download-cost-template').onclick = downloadCostTemplate;
   document.getElementById('btn-clear').onclick = ()=>{
     if(!confirm('Очистить загруженные файлы и текущий отчёт? История решений и настройки сохранятся.')) return;
     queued.current = []; queued.previous = [];
