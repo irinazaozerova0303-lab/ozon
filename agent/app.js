@@ -1032,6 +1032,15 @@ function trendChartFrame(W, H, padL, padR, padT, padB, maxV, xFn, ticks, minGap,
   return { y, gridSvg, xLabelsSvg, plotW, plotH };
 }
 
+// Столбик с закруглённым верхом (4px) и прямым основанием — растёт от базовой линии.
+function roundedTopBarPath(xLeft, xRight, yTop, yBase, r){
+  const w = xRight-xLeft;
+  if(w<=0 || yBase<=yTop) return '';
+  r = Math.max(0, Math.min(r, w/2, yBase-yTop));
+  return `M${xLeft},${yBase} L${xLeft},${yTop+r} Q${xLeft},${yTop} ${xLeft+r},${yTop} `
+    + `L${xRight-r},${yTop} Q${xRight},${yTop} ${xRight},${yTop+r} L${xRight},${yBase} Z`;
+}
+
 function renderSalesTrendChart(){
   const emptyEl = document.getElementById('trend-empty');
   const wrap = document.getElementById('trend-chart-wrap');
@@ -1084,31 +1093,33 @@ function renderSalesTrendChart(){
   const W = Math.max(320, wrap.clientWidth || 900);
   const H = 260;
   const padL = 54, padR = 16, padT = 16, padB = 36;
+  const plotW = W - padL - padR;
   const maxV = Math.max(...buckets.map(b=>b.value), 0) * 1.15 || 1;
-  const x = i => padL + (buckets.length<=1 ? (W-padL-padR)/2 : i/(buckets.length-1)*(W-padL-padR));
+  const slotW = plotW / buckets.length;
+  const x = i => padL + slotW*(i+0.5);
   const ticks0 = buckets.map((b,i)=>i);
   const frame = trendChartFrame(W, H, padL, padR, padT, padB, maxV, x, ticks0, 64, i=>buckets[i].label);
   const y = frame.y;
+  const baseline = y(0);
+  const barW = Math.max(2, Math.min(24, slotW-4));
 
-  const linePath = buckets.length<2 ? '' : buckets.map((b,i)=> (i===0?'M':'L') + x(i).toFixed(1) + ',' + y(b.value).toFixed(1)).join(' ');
-  const areaPath = buckets.length<2 ? '' : linePath + ` L${x(buckets.length-1).toFixed(1)},${(padT+frame.plotH).toFixed(1)} L${x(0).toFixed(1)},${(padT+frame.plotH).toFixed(1)} Z`;
-
-  let dotsSvg = '';
+  let maxIdx = 0;
+  buckets.forEach((b,i)=>{ if(b.value>buckets[maxIdx].value) maxIdx = i; });
+  let barsSvg = '';
   buckets.forEach((b,i)=>{
-    const cx = x(i).toFixed(1), cy = y(b.value).toFixed(1);
-    const isLast = i===buckets.length-1;
-    dotsSvg += `<g><circle class="trend-dot" cx="${cx}" cy="${cy}" r="5"><title>${escapeHtml(b.label)}: ${escapeHtml(fmtVal(b.value))} (дней с данными: ${b.days})</title></circle>`;
-    if(isLast){
-      dotsSvg += `<text class="trend-value-label" x="${Number(cx)-12}" y="${Number(cy)-10}" text-anchor="end">${escapeHtml(fmtVal(b.value))}</text>`;
+    const cx = x(i), top = y(b.value);
+    const path = roundedTopBarPath(cx-barW/2, cx+barW/2, top, baseline, 4);
+    const isLabeled = i===buckets.length-1 || i===maxIdx;
+    barsSvg += `<g><path class="trend-bar" d="${path}"><title>${escapeHtml(b.label)}: ${escapeHtml(fmtVal(b.value))} (дней с данными: ${b.days})</title></path>`;
+    if(isLabeled){
+      barsSvg += `<text class="trend-value-label" x="${cx.toFixed(1)}" y="${(top-8).toFixed(1)}" text-anchor="middle">${escapeHtml(fmtVal(b.value))}</text>`;
     }
-    dotsSvg += '</g>';
+    barsSvg += '</g>';
   });
 
   wrap.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
     ${frame.gridSvg}
-    <path class="trend-area" d="${areaPath}"></path>
-    <path class="trend-line" d="${linePath}"></path>
-    ${dotsSvg}
+    ${barsSvg}
     ${frame.xLabelsSvg}
   </svg>`;
 
@@ -1142,40 +1153,64 @@ function renderCompareChart(cmp, fmtVal, els){
   const W = Math.max(320, wrap.clientWidth || 900);
   const H = 260;
   const padL = 54, padR = 16, padT = 16, padB = 36;
+  const plotW = W - padL - padR;
   const allVals = [...cmp.curMap.values(), ...cmp.prevMap.values()];
   const maxV = Math.max(...allVals, 0) * 1.15 || 1;
-  const x = i => padL + (cmp.maxIdx<=1 ? (W-padL-padR)/2 : (i-1)/(cmp.maxIdx-1)*(W-padL-padR));
+  const slotW = plotW / cmp.maxIdx;
+  const x = i => padL + slotW*(i-0.5);
   const ticks1 = Array.from({length:cmp.maxIdx}, (_,k)=>k+1);
   const frame = trendChartFrame(W, H, padL, padR, padT, padB, maxV, x, ticks1, 44, i=>cmp.idxLabel(i));
   const y = frame.y;
+  const baseline = y(0);
+  const barW = Math.max(2, Math.min(20, (slotW-6)/2));
+  const pairGap = 2;
 
-  function buildSeries(map, dotCls){
-    const idxs = Array.from(map.keys()).sort((a,b)=>a-b);
-    let path = '', dots = '';
-    idxs.forEach((i,pos)=>{
-      const cx = x(i).toFixed(1), cy = y(map.get(i)).toFixed(1);
-      path += (pos===0?'M':'L') + cx + ',' + cy + ' ';
-      dots += `<circle class="trend-dot ${dotCls}" cx="${cx}" cy="${cy}" r="4"><title>${escapeHtml(cmp.idxLabel(i))}: ${escapeHtml(fmtVal(map.get(i)))}</title></circle>`;
-    });
-    return { path, dots };
+  let barsSvg = '';
+  for(let i=1;i<=cmp.maxIdx;i++){
+    if(!cmp.curMap.has(i) && !cmp.prevMap.has(i)) continue;
+    const cx = x(i);
+    const pairLeft = cx - barW - pairGap/2;
+    if(cmp.prevMap.has(i)){
+      const top = y(cmp.prevMap.get(i));
+      const path = roundedTopBarPath(pairLeft, pairLeft+barW, top, baseline, 3);
+      barsSvg += `<path class="trend-bar-prev" d="${path}"><title>${escapeHtml(cmp.prevLabel)}, ${escapeHtml(cmp.idxLabel(i))}: ${escapeHtml(fmtVal(cmp.prevMap.get(i)))}</title></path>`;
+    }
+    if(cmp.curMap.has(i)){
+      const curLeft = pairLeft+barW+pairGap;
+      const top = y(cmp.curMap.get(i));
+      const path = roundedTopBarPath(curLeft, curLeft+barW, top, baseline, 3);
+      barsSvg += `<path class="trend-bar" d="${path}"><title>${escapeHtml(cmp.curLabel)}, ${escapeHtml(cmp.idxLabel(i))}: ${escapeHtml(fmtVal(cmp.curMap.get(i)))}</title></path>`;
+    }
   }
-  const curSeries = buildSeries(cmp.curMap, 'trend-dot-cur');
-  const prevSeries = buildSeries(cmp.prevMap, 'trend-dot-prev');
 
-  wrap.innerHTML = `<div class="trend-legend">
+  // Честное % изменение — только по дням/месяцам, где данные есть в ОБОИХ
+  // периодах, иначе более длинный период всегда казался бы «выгоднее».
+  const commonIdx = Array.from(cmp.curMap.keys()).filter(i=>cmp.prevMap.has(i));
+  let statRow = '';
+  if(commonIdx.length){
+    const curSub = sum(commonIdx.map(i=>cmp.curMap.get(i)));
+    const prevSub = sum(commonIdx.map(i=>cmp.prevMap.get(i)));
+    const deltaPct = prevSub ? (curSub-prevSub)/prevSub*100 : null;
+    const deltaHtml = deltaPct==null ? '' : `<span class="trend-delta ${deltaPct>=0?'up':'down'}">${deltaPct>=0?'↑':'↓'} ${Math.abs(deltaPct).toFixed(0)}%</span>`;
+    statRow = `<div class="trend-stat-row">
+      <div class="trend-stat"><span class="trend-swatch trend-swatch-cur"></span>${escapeHtml(cmp.curLabel)} <strong>${escapeHtml(fmtVal(curSub))}</strong> ${deltaHtml}</div>
+      <div class="trend-stat"><span class="trend-swatch trend-swatch-prev"></span>${escapeHtml(cmp.prevLabel)} <strong>${escapeHtml(fmtVal(prevSub))}</strong></div>
+    </div>`;
+  }
+
+  wrap.innerHTML = `${statRow}<div class="trend-legend">
       <div class="trend-legend-item"><span class="trend-swatch trend-swatch-cur"></span>${escapeHtml(cmp.curLabel)} (${cmp.curMap.size} точ.)</div>
       <div class="trend-legend-item"><span class="trend-swatch trend-swatch-prev"></span>${escapeHtml(cmp.prevLabel)} (${cmp.prevMap.size} точ.)</div>
     </div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
       ${frame.gridSvg}
-      <path class="trend-line trend-line-prev" d="${prevSeries.path}"></path>
-      <path class="trend-line trend-line-cur" d="${curSeries.path}"></path>
-      ${prevSeries.dots}
-      ${curSeries.dots}
+      ${barsSvg}
       ${frame.xLabelsSvg}
     </svg>`;
 
-  noteEl.textContent = `Сравнение только там, где данные есть хотя бы в одном из периодов — недостающие точки не считаются нулевыми. ${escapeHtml(cmp.curLabel)}: ${cmp.curMap.size} из ${cmp.maxIdx}. ${escapeHtml(cmp.prevLabel)}: ${cmp.prevMap.size} из ${cmp.maxIdx}.`;
+  noteEl.textContent = commonIdx.length
+    ? `% изменения — по ${commonIdx.length} общим точкам, где данные есть в обоих периодах (не по всей сумме — иначе более длинный период всегда выглядел бы «лучше»). ${escapeHtml(cmp.curLabel)}: ${cmp.curMap.size} из ${cmp.maxIdx}. ${escapeHtml(cmp.prevLabel)}: ${cmp.prevMap.size} из ${cmp.maxIdx}.`
+    : `Нет ни одной общей точки для честного сравнения % — периоды не пересекаются по дням/месяцам с данными. ${escapeHtml(cmp.curLabel)}: ${cmp.curMap.size} из ${cmp.maxIdx}. ${escapeHtml(cmp.prevLabel)}: ${cmp.prevMap.size} из ${cmp.maxIdx}.`;
 
   const tbody = document.querySelector('#trend-table tbody');
   const rows = [];
