@@ -57,13 +57,25 @@
           <button class="btn btn-ghost btn-small" id="btn-api-test">Проверить подключение</button>
         </div>
         <div id="api-status" class="log"></div>
-        <div class="upload-controls" style="margin-top:6px;">
+
+        <h3 style="margin:20px 0 6px;font-size:14px;">Период (текущий)</h3>
+        <p class="muted">Можно смотреть день, неделю, месяц или год — выберите пресет или укажите даты вручную. Этот диапазон использует и «Обновить всё», и все кнопки «→ текущий период» ниже.</p>
+        <div class="upload-controls">
           <label class="field">Дата с<input type="date" id="api-date-from"></label>
           <label class="field">Дата по<input type="date" id="api-date-to"></label>
-          <button class="btn btn-ghost btn-small" id="btn-api-today" type="button" title="Сбросить обе даты на сегодня">Сегодня</button>
-          <button class="btn btn-primary btn-small" id="btn-api-refresh-all">🔄 Обновить всё и построить отчёт</button>
         </div>
-        <p class="muted" style="margin:6px 0 0;">Одна кнопка выше подтягивает остатки, товары и продажи за текущий период и сразу строит отчёт. Кнопки ниже — для точечной догрузки или сравнения с предыдущим периодом.</p>
+        <div class="upload-controls" style="margin-top:6px;">
+          <button class="btn btn-ghost btn-small" data-preset="today" type="button">Сегодня</button>
+          <button class="btn btn-ghost btn-small" data-preset="yesterday" type="button">Вчера</button>
+          <button class="btn btn-ghost btn-small" data-preset="week7" type="button">7 дней</button>
+          <button class="btn btn-ghost btn-small" data-preset="thisMonth" type="button">Этот месяц</button>
+          <button class="btn btn-ghost btn-small" data-preset="prevMonth" type="button">Прошлый месяц</button>
+          <button class="btn btn-ghost btn-small" data-preset="thisYear" type="button">Этот год</button>
+          <button class="btn btn-ghost btn-small" data-preset="prevYear" type="button">Прошлый год</button>
+        </div>
+        <div class="upload-controls" style="margin-top:10px;">
+          <button class="btn btn-primary btn-small" id="btn-api-refresh-all">🔄 Обновить всё и построить отчёт за выбранный период</button>
+        </div>
         <div class="upload-controls">
           <button class="btn btn-ghost btn-small" data-api-pull="stocks" data-period="current">Остатки → текущий период</button>
           <button class="btn btn-ghost btn-small" data-api-pull="products" data-period="current">Товары (названия) → текущий период</button>
@@ -72,6 +84,17 @@
           <button class="btn btn-ghost btn-small" data-api-pull="reviews" data-period="current">Отзывы → текущий период</button>
         </div>
         <p class="muted" style="margin:6px 0 0;">Финансы — приблизительная разбивка по статьям (не бухгалтерская проводка). Отзывы могут быть недоступны, если у вас не тариф Premium/Premium Plus.</p>
+
+        <h3 style="margin:20px 0 6px;font-size:14px;">Период (предыдущий) — для сравнения</h3>
+        <p class="muted">Отдельные даты — не путаются с периодом выше. «Такой же период» сдвигает выбранный вами текущий период на месяц/год назад.</p>
+        <div class="upload-controls">
+          <label class="field">Дата с<input type="date" id="api-date-from-prev"></label>
+          <label class="field">Дата по<input type="date" id="api-date-to-prev"></label>
+        </div>
+        <div class="upload-controls" style="margin-top:6px;">
+          <button class="btn btn-ghost btn-small" data-preset-prev="month" type="button">Такой же период, месяц назад</button>
+          <button class="btn btn-ghost btn-small" data-preset-prev="year" type="button">Такой же период, год назад</button>
+        </div>
         <div class="upload-controls">
           <button class="btn btn-ghost btn-small" data-api-pull="stocks" data-period="previous">Остатки → предыдущий период</button>
           <button class="btn btn-ghost btn-small" data-api-pull="sales" data-period="previous">Продажи → предыдущий период</button>
