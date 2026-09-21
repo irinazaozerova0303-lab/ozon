@@ -146,6 +146,21 @@ tbody tr{cursor:pointer;}
 .finance-legend-item{display:flex;align-items:center;gap:7px;}
 .finance-swatch{width:11px;height:11px;border-radius:3px;flex-shrink:0;}
 
+.trend-toolbar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-top:14px;}
+.trend-group{display:flex;gap:6px;flex-wrap:wrap;}
+.trend-btn{border:1px solid var(--border);background:#fff;color:var(--text-soft);border-radius:8px;padding:6px 12px;font-size:12.5px;font-weight:600;cursor:pointer;}
+.trend-btn:hover{background:rgba(0,91,255,.06);}
+.trend-btn.active{background:var(--primary);border-color:var(--primary);color:#fff;}
+.trend-chart-wrap{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;margin-top:10px;}
+.trend-chart-wrap svg{width:100%;height:auto;display:block;overflow:visible;}
+.trend-grid-line{stroke:var(--border);stroke-width:1;}
+.trend-axis-label{fill:var(--text-soft);font-size:11px;}
+.trend-line{fill:none;stroke:var(--primary);stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
+.trend-area{fill:var(--primary);opacity:.06;}
+.trend-dot{fill:#fff;stroke:var(--primary);stroke-width:2;cursor:pointer;}
+.trend-dot:hover{fill:var(--primary);}
+.trend-value-label{fill:var(--text);font-size:12px;font-weight:700;}
+
 #help-columns{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin-top:12px;}
 .help-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px;font-size:13px;}
 .help-card h3{margin:0 0 6px;font-size:14px;}

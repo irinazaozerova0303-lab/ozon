@@ -161,6 +161,17 @@ function shiftRange(fromStr, toStr, unit){
 function uid(){
   return 'id' + Math.random().toString(36).slice(2,10) + Date.now().toString(36);
 }
+const RU_MONTHS_SHORT = ['янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'];
+function fmtDayLabel(dateStr){
+  const d = new Date(dateStr+'T00:00:00Z');
+  return String(d.getUTCDate()).padStart(2,'0') + '.' + String(d.getUTCMonth()+1).padStart(2,'0');
+}
+function weekStartKey(dateStr){
+  const d = new Date(dateStr+'T00:00:00Z');
+  const dow = (d.getUTCDay()+6)%7; // Пн=0 ... Вс=6
+  d.setUTCDate(d.getUTCDate()-dow);
+  return fmtDate(d);
+}
 function sum(arr){
   const vals = arr.filter(v=>v!=null);
   if(!vals.length) return null;
@@ -899,6 +910,156 @@ function loadHistory(){
   catch(e){ return []; }
 }
 function saveHistory(){ localStorage.setItem('ozonAgent.decisions', JSON.stringify(HISTORY)); }
+
+/* ---------- Динамика продаж (история за отдельные дни, для графика по дням/неделям/месяцам/годам) ---------- */
+
+function loadSalesHistory(){
+  try{ const raw = localStorage.getItem('ozonAgent.salesHistory'); return raw ? JSON.parse(raw) : []; }
+  catch(e){ return []; }
+}
+function saveSalesHistoryList(list){
+  try{ localStorage.setItem('ozonAgent.salesHistory', JSON.stringify(list)); }catch(e){}
+}
+// Сохраняем в историю только отчёты ровно за один день — иначе при суммировании
+// по неделе/месяцу/году многодневный отчёт задвоил бы сумму с уже сохранёнными днями.
+function recordSalesSnapshot(dateStr, periodFrom, periodTo, revenue, orders){
+  let day = null;
+  if(periodFrom && periodTo){ if(periodFrom===periodTo) day = periodFrom; }
+  else { day = dateStr; }
+  if(!day || (revenue==null && orders==null)) return;
+  const list = loadSalesHistory();
+  const rec = { date: day, revenue: revenue==null?null:revenue, orders: orders==null?null:orders };
+  const idx = list.findIndex(r=>r.date===day);
+  if(idx>=0) list[idx] = rec; else list.push(rec);
+  saveSalesHistoryList(list);
+}
+function aggregateSalesHistory(history, granularity){
+  const buckets = new Map();
+  history.forEach(rec=>{
+    let key;
+    if(granularity==='day') key = rec.date;
+    else if(granularity==='week') key = weekStartKey(rec.date);
+    else if(granularity==='month') key = rec.date.slice(0,7);
+    else key = rec.date.slice(0,4);
+    if(!buckets.has(key)) buckets.set(key, {key, revenue:0, orders:0, hasRevenue:false, hasOrders:false, days:0});
+    const b = buckets.get(key);
+    if(rec.revenue!=null){ b.revenue += rec.revenue; b.hasRevenue = true; }
+    if(rec.orders!=null){ b.orders += rec.orders; b.hasOrders = true; }
+    b.days += 1;
+  });
+  const list = Array.from(buckets.values()).sort((a,b)=> a.key<b.key?-1:a.key>b.key?1:0);
+  list.forEach(b=>{
+    if(granularity==='day') b.label = fmtDayLabel(b.key);
+    else if(granularity==='week') b.label = 'нед. с ' + fmtDayLabel(b.key);
+    else if(granularity==='month'){ const [y,m] = b.key.split('-'); b.label = RU_MONTHS_SHORT[Number(m)-1] + ' ' + y; }
+    else b.label = b.key;
+  });
+  return list;
+}
+function fmtCompact(n){
+  const abs = Math.abs(n);
+  if(abs>=1e6) return (n/1e6).toFixed(1).replace('.', ',') + ' млн';
+  if(abs>=1e3) return Math.round(n/1e3) + ' тыс';
+  return String(Math.round(n));
+}
+
+let TREND_STATE = { gran:'day', metric:'revenue' };
+
+function renderSalesTrendChart(){
+  const emptyEl = document.getElementById('trend-empty');
+  const wrap = document.getElementById('trend-chart-wrap');
+  const noteEl = document.getElementById('trend-note');
+  const tableToggle = document.getElementById('btn-trend-table-toggle');
+  const tableWrap = document.getElementById('trend-table-wrap');
+  if(!emptyEl || !wrap) return; // страница ещё не отрисована
+
+  document.querySelectorAll('#trend-gran-group [data-trend-gran]').forEach(btn=>
+    btn.classList.toggle('active', btn.dataset.trendGran===TREND_STATE.gran));
+  document.querySelectorAll('#trend-metric-group [data-trend-metric]').forEach(btn=>
+    btn.classList.toggle('active', btn.dataset.trendMetric===TREND_STATE.metric));
+
+  const history = loadSalesHistory();
+  const metric = TREND_STATE.metric;
+  const buckets = aggregateSalesHistory(history, TREND_STATE.gran)
+    .map(b=>({...b, value: metric==='revenue' ? (b.hasRevenue?b.revenue:null) : (b.hasOrders?b.orders:null)}))
+    .filter(b=> b.value!=null);
+
+  if(buckets.length < 2){
+    wrap.hidden = true;
+    tableToggle.hidden = true;
+    tableWrap.hidden = true;
+    emptyEl.hidden = false;
+    emptyEl.textContent = history.length
+      ? 'Пока мало точек для графика в этом разрезе. Возвращайтесь через несколько дней — точки копятся по одной за каждый отчёт за один день.'
+      : 'Пока нет истории продаж. Она начнёт копиться после первого отчёта за один день (кнопка «Обновить всё» на вкладке «Загрузка данных», или загрузка файла с датой отчёта) — заходите строить отчёт регулярно, и здесь появится график.';
+    noteEl.textContent = '';
+    return;
+  }
+  emptyEl.hidden = true;
+  wrap.hidden = false;
+  tableToggle.hidden = false;
+
+  const W = Math.max(320, wrap.clientWidth || 900);
+  const H = 260;
+  const padL = 54, padR = 16, padT = 16, padB = 36;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+
+  const values = buckets.map(b=>b.value);
+  const maxV = Math.max(...values, 0) * 1.15 || 1;
+  const minV = 0;
+  const x = i => padL + (buckets.length===1 ? plotW/2 : i/(buckets.length-1)*plotW);
+  const y = v => padT + plotH - ((v-minV)/(maxV-minV||1))*plotH;
+
+  const gridCount = 4;
+  let gridSvg = '';
+  for(let i=0;i<=gridCount;i++){
+    const v = maxV/gridCount*i;
+    const gy = y(v);
+    gridSvg += `<line class="trend-grid-line" x1="${padL}" y1="${gy}" x2="${W-padR}" y2="${gy}"></line>`;
+    gridSvg += `<text class="trend-axis-label" x="${padL-8}" y="${gy+4}" text-anchor="end">${fmtCompact(v)}</text>`;
+  }
+
+  const maxLabels = Math.max(2, Math.floor(plotW/64));
+  const step = Math.max(1, Math.ceil(buckets.length/maxLabels));
+  let xLabelsSvg = '';
+  buckets.forEach((b,i)=>{
+    if(i%step===0 || i===buckets.length-1){
+      xLabelsSvg += `<text class="trend-axis-label" x="${x(i)}" y="${H-10}" text-anchor="middle">${escapeHtml(b.label)}</text>`;
+    }
+  });
+
+  const linePath = buckets.map((b,i)=> (i===0?'M':'L') + x(i).toFixed(1) + ',' + y(b.value).toFixed(1)).join(' ');
+  const areaPath = linePath + ` L${x(buckets.length-1).toFixed(1)},${(padT+plotH).toFixed(1)} L${x(0).toFixed(1)},${(padT+plotH).toFixed(1)} Z`;
+
+  const unit = metric==='revenue' ? ' ₽' : ' шт';
+  const fmtVal = metric==='revenue' ? fmtMoney : (n)=> fmtNum(n,0) + ' шт';
+  let dotsSvg = '';
+  buckets.forEach((b,i)=>{
+    const cx = x(i).toFixed(1), cy = y(b.value).toFixed(1);
+    const isLast = i===buckets.length-1;
+    dotsSvg += `<g><circle class="trend-dot" cx="${cx}" cy="${cy}" r="5"><title>${escapeHtml(b.label)}: ${escapeHtml(fmtVal(b.value))} (дней с данными: ${b.days})</title></circle>`;
+    if(isLast){
+      dotsSvg += `<text class="trend-value-label" x="${Number(cx)-12}" y="${Number(cy)-10}" text-anchor="end">${escapeHtml(fmtVal(b.value))}</text>`;
+    }
+    dotsSvg += '</g>';
+  });
+
+  wrap.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+    ${gridSvg}
+    <path class="trend-area" d="${areaPath}"></path>
+    <path class="trend-line" d="${linePath}"></path>
+    ${dotsSvg}
+    ${xLabelsSvg}
+  </svg>`;
+
+  const totalDaysInHistory = new Set(history.map(r=>r.date)).size;
+  noteEl.textContent = `${metric==='revenue'?'Выручка':'Заказы'} по ${buckets.length===1?'1 точке':buckets.length+' точкам'}. В истории сохранено дней с данными: ${totalDaysInHistory}. Периоды, где сохранённых дней меньше, чем дней в самом периоде, показывают сумму только по тем дням, что реально есть — не считайте их окончательными, если период ещё не закончился.`;
+
+  const tbody = document.querySelector('#trend-table tbody');
+  tbody.innerHTML = buckets.map(b=>
+    `<tr><td>${escapeHtml(b.label)}</td><td>${escapeHtml(fmtVal(b.value))}</td><td>${b.days}</td></tr>`
+  ).join('');
+}
 function loadApiCreds(){
   try{
     const raw = localStorage.getItem('ozonAgent.apiCreds');
@@ -940,6 +1101,7 @@ function process(){
     periodFrom: document.getElementById('api-date-from').value || null,
     periodTo: document.getElementById('api-date-to').value || null,
   };
+  recordSalesSnapshot(STATE.dateStr, STATE.periodFrom, STATE.periodTo, current.totals.revenue, current.totals.orders);
   persistState();
   renderAll();
   switchTab('report');
@@ -953,6 +1115,7 @@ function persistState(){
 
 function renderAll(){
   renderReport();
+  renderSalesTrendChart();
   renderSkuTable();
   renderFinanceTab();
   renderAdsTab();
@@ -1998,6 +2161,20 @@ document.addEventListener('DOMContentLoaded', ()=>{
       document.getElementById('api-date-to-prev').value = shifted.to;
     };
   });
+  document.querySelectorAll('#trend-gran-group [data-trend-gran]').forEach(btn=>{
+    btn.onclick = ()=>{ TREND_STATE.gran = btn.dataset.trendGran; renderSalesTrendChart(); };
+  });
+  document.querySelectorAll('#trend-metric-group [data-trend-metric]').forEach(btn=>{
+    btn.onclick = ()=>{ TREND_STATE.metric = btn.dataset.trendMetric; renderSalesTrendChart(); };
+  });
+  document.getElementById('btn-trend-table-toggle').onclick = ()=>{
+    const tableWrap = document.getElementById('trend-table-wrap');
+    const btn = document.getElementById('btn-trend-table-toggle');
+    tableWrap.hidden = !tableWrap.hidden;
+    btn.textContent = tableWrap.hidden ? 'Показать таблицей' : 'Скрыть таблицу';
+  };
+  window.addEventListener('resize', ()=>{ if(!document.getElementById('trend-chart-wrap').hidden) renderSalesTrendChart(); });
+  renderSalesTrendChart();
   document.getElementById('btn-api-save').onclick = ()=>{
     API_CREDS = {
       clientId: document.getElementById('api-client-id').value.trim(),

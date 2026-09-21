@@ -166,6 +166,33 @@
         <button class="btn btn-ghost" id="btn-download-report">Скачать .txt</button>
       </div>
     </div>
+
+    <h2 style="margin-top:20px;">📈 Динамика продаж</h2>
+    <p class="muted">Точка добавляется в историю автоматически после каждого отчёта <strong>за один день</strong> (кнопка «Обновить всё» с периодом «Сегодня»/«Вчера», или загрузка файла с датой отчёта). Отчёты сразу за неделю/месяц/год в историю по дням не сохраняются — иначе сумма задвоится. Суммы за неделю/месяц/год ниже считаются только по тем дням, что реально сохранены — если каких-то дней не хватает, это честно видно по числу дней в подсказке.</p>
+    <div class="trend-toolbar">
+      <div class="trend-group" id="trend-gran-group">
+        <button class="trend-btn" data-trend-gran="day" type="button">По дням</button>
+        <button class="trend-btn" data-trend-gran="week" type="button">По неделям</button>
+        <button class="trend-btn" data-trend-gran="month" type="button">По месяцам</button>
+        <button class="trend-btn" data-trend-gran="year" type="button">По годам</button>
+      </div>
+      <div class="trend-group" id="trend-metric-group">
+        <button class="trend-btn" data-trend-metric="revenue" type="button">Выручка</button>
+        <button class="trend-btn" data-trend-metric="orders" type="button">Заказы</button>
+      </div>
+    </div>
+    <div id="trend-empty" class="empty-state">Пока нет истории продаж.</div>
+    <div class="trend-chart-wrap" id="trend-chart-wrap" hidden></div>
+    <div id="trend-note" class="detail-note"></div>
+    <button class="btn btn-ghost btn-small" id="btn-trend-table-toggle" style="margin-top:8px;" hidden>Показать таблицей</button>
+    <div class="table-wrap" id="trend-table-wrap" hidden>
+      <table id="trend-table">
+        <thead><tr><th>Период</th><th>Значение</th><th>Дней с данными</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <h2 style="margin-top:28px;">Текст отчёта</h2>
     <div id="report-empty" class="empty-state">Загрузите данные на вкладке «Загрузка данных», чтобы получить отчёт.</div>
     <pre id="report-text" class="report-text" hidden></pre>
   </section>
