@@ -963,7 +963,74 @@ function fmtCompact(n){
   return String(Math.round(n));
 }
 
-let TREND_STATE = { gran:'day', metric:'revenue' };
+let TREND_STATE = { gran:'day', metric:'revenue', compare:false };
+
+function prevMonthKeyOf(key){
+  const [y,m] = key.split('-').map(Number);
+  const d = new Date(Date.UTC(y, m-1, 1));
+  d.setUTCMonth(d.getUTCMonth()-1);
+  return d.getUTCFullYear()+'-'+String(d.getUTCMonth()+1).padStart(2,'0');
+}
+function monthLabelRu(key){ const [y,m] = key.split('-'); return RU_MONTHS_SHORT[Number(m)-1]+' '+y; }
+
+// Готовим две выровненные серии для сравнения: «по дням» сравнивается с прошлым
+// календарным месяцем (день месяца 1..31), «по месяцам» — с прошлым годом (месяц 1..12).
+function buildCompareSeries(history, gran, metric){
+  const pick = (b)=> metric==='revenue' ? (b.hasRevenue?b.revenue:null) : (b.hasOrders?b.orders:null);
+  if(gran==='day'){
+    const dayBuckets = aggregateSalesHistory(history, 'day');
+    if(!dayBuckets.length) return null;
+    const curMonthKey = dayBuckets[dayBuckets.length-1].key.slice(0,7);
+    const prevMonthKey = prevMonthKeyOf(curMonthKey);
+    const curMap = new Map(), prevMap = new Map();
+    dayBuckets.forEach(b=>{
+      const v = pick(b); if(v==null) return;
+      const mk = b.key.slice(0,7), idx = Number(b.key.slice(8,10));
+      if(mk===curMonthKey) curMap.set(idx, v);
+      else if(mk===prevMonthKey) prevMap.set(idx, v);
+    });
+    if(!curMap.size && !prevMap.size) return null;
+    return { curLabel: monthLabelRu(curMonthKey), prevLabel: monthLabelRu(prevMonthKey), curMap, prevMap, maxIdx:31, idxLabel:i=>String(i), colLabel:'День месяца', toggleLabel:'Сравнить с прошлым месяцем' };
+  }
+  if(gran==='month'){
+    const monthBuckets = aggregateSalesHistory(history, 'month');
+    if(!monthBuckets.length) return null;
+    const curYear = monthBuckets[monthBuckets.length-1].key.slice(0,4);
+    const prevYear = String(Number(curYear)-1);
+    const curMap = new Map(), prevMap = new Map();
+    monthBuckets.forEach(b=>{
+      const v = pick(b); if(v==null) return;
+      const [y,m] = b.key.split('-'), idx = Number(m);
+      if(y===curYear) curMap.set(idx, v);
+      else if(y===prevYear) prevMap.set(idx, v);
+    });
+    if(!curMap.size && !prevMap.size) return null;
+    return { curLabel:curYear, prevLabel:prevYear, curMap, prevMap, maxIdx:12, idxLabel:i=>RU_MONTHS_SHORT[i-1], colLabel:'Месяц', toggleLabel:'Сравнить с прошлым годом' };
+  }
+  return null;
+}
+
+// ticks — массив индексов в той же системе координат, что принимает xFn (0-based
+// для одной серии, 1-based для сравнения) — так xFn и labelAt всегда согласованы.
+function trendChartFrame(W, H, padL, padR, padT, padB, maxV, xFn, ticks, minGap, labelAt){
+  const plotW = W-padL-padR, plotH = H-padT-padB;
+  const y = v => padT + plotH - (v/(maxV||1))*plotH;
+  const gridCount = 4;
+  let gridSvg = '';
+  for(let i=0;i<=gridCount;i++){
+    const v = maxV/gridCount*i, gy = y(v);
+    gridSvg += `<line class="trend-grid-line" x1="${padL}" y1="${gy}" x2="${W-padR}" y2="${gy}"></line>`;
+    gridSvg += `<text class="trend-axis-label" x="${padL-8}" y="${gy+4}" text-anchor="end">${fmtCompact(v)}</text>`;
+  }
+  const step = Math.max(1, Math.ceil(ticks.length/Math.max(1,Math.floor(plotW/minGap))));
+  let xLabelsSvg = '';
+  ticks.forEach((idx,pos)=>{
+    if(pos%step===0 || pos===ticks.length-1){
+      xLabelsSvg += `<text class="trend-axis-label" x="${xFn(idx)}" y="${H-10}" text-anchor="middle">${escapeHtml(labelAt(idx))}</text>`;
+    }
+  });
+  return { y, gridSvg, xLabelsSvg, plotW, plotH };
+}
 
 function renderSalesTrendChart(){
   const emptyEl = document.getElementById('trend-empty');
@@ -971,6 +1038,7 @@ function renderSalesTrendChart(){
   const noteEl = document.getElementById('trend-note');
   const tableToggle = document.getElementById('btn-trend-table-toggle');
   const tableWrap = document.getElementById('trend-table-wrap');
+  const compareBtn = document.getElementById('btn-trend-compare');
   if(!emptyEl || !wrap) return; // страница ещё не отрисована
 
   document.querySelectorAll('#trend-gran-group [data-trend-gran]').forEach(btn=>
@@ -980,18 +1048,32 @@ function renderSalesTrendChart(){
 
   const history = loadSalesHistory();
   const metric = TREND_STATE.metric;
+  const fmtVal = metric==='revenue' ? fmtMoney : (n)=> fmtNum(n,0) + ' шт';
+
+  const compareData = (TREND_STATE.gran==='day' || TREND_STATE.gran==='month')
+    ? buildCompareSeries(history, TREND_STATE.gran, metric) : null;
+  compareBtn.hidden = !compareData;
+  if(!compareData) TREND_STATE.compare = false;
+  else compareBtn.textContent = (TREND_STATE.compare ? '✓ ' : '') + compareData.toggleLabel;
+  compareBtn.classList.toggle('active', TREND_STATE.compare && !!compareData);
+
+  if(TREND_STATE.compare && compareData){
+    renderCompareChart(compareData, fmtVal, {wrap, noteEl, tableToggle, tableWrap, emptyEl});
+    return;
+  }
+
   const buckets = aggregateSalesHistory(history, TREND_STATE.gran)
     .map(b=>({...b, value: metric==='revenue' ? (b.hasRevenue?b.revenue:null) : (b.hasOrders?b.orders:null)}))
     .filter(b=> b.value!=null);
 
-  if(buckets.length < 2){
+  document.querySelector('#trend-table thead').innerHTML = '<tr><th>Период</th><th>Значение</th><th>Дней с данными</th></tr>';
+
+  if(buckets.length < 1){
     wrap.hidden = true;
     tableToggle.hidden = true;
     tableWrap.hidden = true;
     emptyEl.hidden = false;
-    emptyEl.textContent = history.length
-      ? 'Пока мало точек для графика в этом разрезе. Возвращайтесь через несколько дней — точки копятся по одной за каждый отчёт за один день.'
-      : 'Пока нет истории продаж. Она начнёт копиться после первого отчёта за один день (кнопка «Обновить всё» на вкладке «Загрузка данных», или загрузка файла с датой отчёта) — заходите строить отчёт регулярно, и здесь появится график.';
+    emptyEl.textContent = 'Пока нет истории продаж. Она начнёт копиться после первого отчёта за один день (кнопка «Обновить всё» на вкладке «Загрузка данных», или загрузка файла с датой отчёта) — заходите строить отчёт регулярно, и здесь появится график.';
     noteEl.textContent = '';
     return;
   }
@@ -1002,37 +1084,15 @@ function renderSalesTrendChart(){
   const W = Math.max(320, wrap.clientWidth || 900);
   const H = 260;
   const padL = 54, padR = 16, padT = 16, padB = 36;
-  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const maxV = Math.max(...buckets.map(b=>b.value), 0) * 1.15 || 1;
+  const x = i => padL + (buckets.length<=1 ? (W-padL-padR)/2 : i/(buckets.length-1)*(W-padL-padR));
+  const ticks0 = buckets.map((b,i)=>i);
+  const frame = trendChartFrame(W, H, padL, padR, padT, padB, maxV, x, ticks0, 64, i=>buckets[i].label);
+  const y = frame.y;
 
-  const values = buckets.map(b=>b.value);
-  const maxV = Math.max(...values, 0) * 1.15 || 1;
-  const minV = 0;
-  const x = i => padL + (buckets.length===1 ? plotW/2 : i/(buckets.length-1)*plotW);
-  const y = v => padT + plotH - ((v-minV)/(maxV-minV||1))*plotH;
+  const linePath = buckets.length<2 ? '' : buckets.map((b,i)=> (i===0?'M':'L') + x(i).toFixed(1) + ',' + y(b.value).toFixed(1)).join(' ');
+  const areaPath = buckets.length<2 ? '' : linePath + ` L${x(buckets.length-1).toFixed(1)},${(padT+frame.plotH).toFixed(1)} L${x(0).toFixed(1)},${(padT+frame.plotH).toFixed(1)} Z`;
 
-  const gridCount = 4;
-  let gridSvg = '';
-  for(let i=0;i<=gridCount;i++){
-    const v = maxV/gridCount*i;
-    const gy = y(v);
-    gridSvg += `<line class="trend-grid-line" x1="${padL}" y1="${gy}" x2="${W-padR}" y2="${gy}"></line>`;
-    gridSvg += `<text class="trend-axis-label" x="${padL-8}" y="${gy+4}" text-anchor="end">${fmtCompact(v)}</text>`;
-  }
-
-  const maxLabels = Math.max(2, Math.floor(plotW/64));
-  const step = Math.max(1, Math.ceil(buckets.length/maxLabels));
-  let xLabelsSvg = '';
-  buckets.forEach((b,i)=>{
-    if(i%step===0 || i===buckets.length-1){
-      xLabelsSvg += `<text class="trend-axis-label" x="${x(i)}" y="${H-10}" text-anchor="middle">${escapeHtml(b.label)}</text>`;
-    }
-  });
-
-  const linePath = buckets.map((b,i)=> (i===0?'M':'L') + x(i).toFixed(1) + ',' + y(b.value).toFixed(1)).join(' ');
-  const areaPath = linePath + ` L${x(buckets.length-1).toFixed(1)},${(padT+plotH).toFixed(1)} L${x(0).toFixed(1)},${(padT+plotH).toFixed(1)} Z`;
-
-  const unit = metric==='revenue' ? ' ₽' : ' шт';
-  const fmtVal = metric==='revenue' ? fmtMoney : (n)=> fmtNum(n,0) + ' шт';
   let dotsSvg = '';
   buckets.forEach((b,i)=>{
     const cx = x(i).toFixed(1), cy = y(b.value).toFixed(1);
@@ -1045,20 +1105,85 @@ function renderSalesTrendChart(){
   });
 
   wrap.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
-    ${gridSvg}
+    ${frame.gridSvg}
     <path class="trend-area" d="${areaPath}"></path>
     <path class="trend-line" d="${linePath}"></path>
     ${dotsSvg}
-    ${xLabelsSvg}
+    ${frame.xLabelsSvg}
   </svg>`;
 
   const totalDaysInHistory = new Set(history.map(r=>r.date)).size;
-  noteEl.textContent = `${metric==='revenue'?'Выручка':'Заказы'} по ${buckets.length===1?'1 точке':buckets.length+' точкам'}. В истории сохранено дней с данными: ${totalDaysInHistory}. Периоды, где сохранённых дней меньше, чем дней в самом периоде, показывают сумму только по тем дням, что реально есть — не считайте их окончательными, если период ещё не закончился.`;
+  noteEl.textContent = buckets.length===1
+    ? `Пока сохранён только 1 день с данными — линия тренда появится, когда наберётся хотя бы два. В истории сохранено дней: ${totalDaysInHistory}.`
+    : `${metric==='revenue'?'Выручка':'Заказы'} по ${buckets.length} точкам. В истории сохранено дней с данными: ${totalDaysInHistory}. Периоды, где сохранённых дней меньше, чем дней в самом периоде, показывают сумму только по тем дням, что реально есть — не считайте их окончательными, если период ещё не закончился.`;
 
   const tbody = document.querySelector('#trend-table tbody');
   tbody.innerHTML = buckets.map(b=>
     `<tr><td>${escapeHtml(b.label)}</td><td>${escapeHtml(fmtVal(b.value))}</td><td>${b.days}</td></tr>`
   ).join('');
+}
+
+function renderCompareChart(cmp, fmtVal, els){
+  const {wrap, noteEl, tableToggle, tableWrap, emptyEl} = els;
+  document.querySelector('#trend-table thead').innerHTML =
+    `<tr><th>${escapeHtml(cmp.colLabel)}</th><th>${escapeHtml(cmp.curLabel)}</th><th>${escapeHtml(cmp.prevLabel)}</th></tr>`;
+
+  const idxList = [];
+  for(let i=1;i<=cmp.maxIdx;i++) if(cmp.curMap.has(i) || cmp.prevMap.has(i)) idxList.push(i);
+  if(idxList.length < 1){
+    wrap.hidden = true; tableToggle.hidden = true; tableWrap.hidden = true;
+    emptyEl.hidden = false;
+    emptyEl.textContent = 'Недостаточно данных для сравнения — нет ни одного дня/месяца с данными ни в текущем, ни в прошлом периоде.';
+    noteEl.textContent = '';
+    return;
+  }
+  emptyEl.hidden = true; wrap.hidden = false; tableToggle.hidden = false;
+
+  const W = Math.max(320, wrap.clientWidth || 900);
+  const H = 260;
+  const padL = 54, padR = 16, padT = 16, padB = 36;
+  const allVals = [...cmp.curMap.values(), ...cmp.prevMap.values()];
+  const maxV = Math.max(...allVals, 0) * 1.15 || 1;
+  const x = i => padL + (cmp.maxIdx<=1 ? (W-padL-padR)/2 : (i-1)/(cmp.maxIdx-1)*(W-padL-padR));
+  const ticks1 = Array.from({length:cmp.maxIdx}, (_,k)=>k+1);
+  const frame = trendChartFrame(W, H, padL, padR, padT, padB, maxV, x, ticks1, 44, i=>cmp.idxLabel(i));
+  const y = frame.y;
+
+  function buildSeries(map, dotCls){
+    const idxs = Array.from(map.keys()).sort((a,b)=>a-b);
+    let path = '', dots = '';
+    idxs.forEach((i,pos)=>{
+      const cx = x(i).toFixed(1), cy = y(map.get(i)).toFixed(1);
+      path += (pos===0?'M':'L') + cx + ',' + cy + ' ';
+      dots += `<circle class="trend-dot ${dotCls}" cx="${cx}" cy="${cy}" r="4"><title>${escapeHtml(cmp.idxLabel(i))}: ${escapeHtml(fmtVal(map.get(i)))}</title></circle>`;
+    });
+    return { path, dots };
+  }
+  const curSeries = buildSeries(cmp.curMap, 'trend-dot-cur');
+  const prevSeries = buildSeries(cmp.prevMap, 'trend-dot-prev');
+
+  wrap.innerHTML = `<div class="trend-legend">
+      <div class="trend-legend-item"><span class="trend-swatch trend-swatch-cur"></span>${escapeHtml(cmp.curLabel)} (${cmp.curMap.size} точ.)</div>
+      <div class="trend-legend-item"><span class="trend-swatch trend-swatch-prev"></span>${escapeHtml(cmp.prevLabel)} (${cmp.prevMap.size} точ.)</div>
+    </div>
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+      ${frame.gridSvg}
+      <path class="trend-line trend-line-prev" d="${prevSeries.path}"></path>
+      <path class="trend-line trend-line-cur" d="${curSeries.path}"></path>
+      ${prevSeries.dots}
+      ${curSeries.dots}
+      ${frame.xLabelsSvg}
+    </svg>`;
+
+  noteEl.textContent = `Сравнение только там, где данные есть хотя бы в одном из периодов — недостающие точки не считаются нулевыми. ${escapeHtml(cmp.curLabel)}: ${cmp.curMap.size} из ${cmp.maxIdx}. ${escapeHtml(cmp.prevLabel)}: ${cmp.prevMap.size} из ${cmp.maxIdx}.`;
+
+  const tbody = document.querySelector('#trend-table tbody');
+  const rows = [];
+  for(let i=1;i<=cmp.maxIdx;i++){
+    if(!cmp.curMap.has(i) && !cmp.prevMap.has(i)) continue;
+    rows.push(`<tr><td>${escapeHtml(cmp.idxLabel(i))}</td><td>${cmp.curMap.has(i)?escapeHtml(fmtVal(cmp.curMap.get(i))):'—'}</td><td>${cmp.prevMap.has(i)?escapeHtml(fmtVal(cmp.prevMap.get(i))):'—'}</td></tr>`);
+  }
+  tbody.innerHTML = rows.join('');
 }
 function loadApiCreds(){
   try{
@@ -2167,6 +2292,10 @@ document.addEventListener('DOMContentLoaded', ()=>{
   document.querySelectorAll('#trend-metric-group [data-trend-metric]').forEach(btn=>{
     btn.onclick = ()=>{ TREND_STATE.metric = btn.dataset.trendMetric; renderSalesTrendChart(); };
   });
+  document.getElementById('btn-trend-compare').onclick = ()=>{
+    TREND_STATE.compare = !TREND_STATE.compare;
+    renderSalesTrendChart();
+  };
   document.getElementById('btn-trend-table-toggle').onclick = ()=>{
     const tableWrap = document.getElementById('trend-table-wrap');
     const btn = document.getElementById('btn-trend-table-toggle');
