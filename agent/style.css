@@ -140,6 +140,12 @@ tbody tr{cursor:pointer;}
 .settings-grid input,.settings-grid select{border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:14px;color:var(--text);}
 .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px;}
 
+.finance-bar{display:flex;height:34px;border-radius:8px;overflow:hidden;width:100%;background:#EEF1F6;margin-top:4px;}
+.finance-bar-seg{height:100%;min-width:2px;}
+.finance-legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px;font-size:13px;}
+.finance-legend-item{display:flex;align-items:center;gap:7px;}
+.finance-swatch{width:11px;height:11px;border-radius:3px;flex-shrink:0;}
+
 #help-columns{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin-top:12px;}
 .help-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px;font-size:13px;}
 .help-card h3{margin:0 0 6px;font-size:14px;}
