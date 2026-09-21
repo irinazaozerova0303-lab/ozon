@@ -126,6 +126,38 @@ function todayStr(){
   const d = new Date();
   return d.toISOString().slice(0,10);
 }
+function fmtDate(d){ return d.toISOString().slice(0,10); }
+function addDaysUTC(dateStr, days){
+  const d = new Date(dateStr+'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate()+days);
+  return fmtDate(d);
+}
+function computePresetRange(preset){
+  const now = new Date();
+  const y = now.getUTCFullYear(), m = now.getUTCMonth(), day = now.getUTCDate();
+  const today = fmtDate(new Date(Date.UTC(y,m,day)));
+  switch(preset){
+    case 'today': return {from:today, to:today};
+    case 'yesterday': { const t=addDaysUTC(today,-1); return {from:t, to:t}; }
+    case 'week7': return {from:addDaysUTC(today,-6), to:today};
+    case 'thisMonth': return {from:fmtDate(new Date(Date.UTC(y,m,1))), to:today};
+    case 'prevMonth': return {from:fmtDate(new Date(Date.UTC(y,m-1,1))), to:fmtDate(new Date(Date.UTC(y,m,0)))};
+    case 'thisYear': return {from:fmtDate(new Date(Date.UTC(y,0,1))), to:today};
+    case 'prevYear': return {from:fmtDate(new Date(Date.UTC(y-1,0,1))), to:fmtDate(new Date(Date.UTC(y-1,11,31)))};
+    default: return {from:today, to:today};
+  }
+}
+// Приблизительный сдвиг диапазона на месяц/год назад (для «такой же период
+// раньше»); возможны небольшие смещения на стыке месяцев с разным числом дней.
+function shiftRange(fromStr, toStr, unit){
+  const shift = (s)=>{
+    const d = new Date(s+'T00:00:00Z');
+    if(unit==='month') d.setUTCMonth(d.getUTCMonth()-1);
+    else if(unit==='year') d.setUTCFullYear(d.getUTCFullYear()-1);
+    return fmtDate(d);
+  };
+  return { from: shift(fromStr), to: shift(toStr) };
+}
 function uid(){
   return 'id' + Math.random().toString(36).slice(2,10) + Date.now().toString(36);
 }
@@ -776,11 +808,12 @@ function buildPriorities(ds, adRecos){
 
 /* ---------- 10. ОТЧЁТ ---------- */
 
-function buildReportText(ds, priorities, dateStr){
+function buildReportText(ds, priorities, dateStr, periodFrom, periodTo){
   const t = ds.totals;
   const lines = [];
-  lines.push('📊 ЕЖЕДНЕВНЫЙ ОТЧЁТ OZON');
-  lines.push(`Дата: ${dateStr}`);
+  const isRange = periodFrom && periodTo && periodFrom!==periodTo;
+  lines.push(isRange ? '📊 ОТЧЁТ OZON ЗА ПЕРИОД' : '📊 ЕЖЕДНЕВНЫЙ ОТЧЁТ OZON');
+  lines.push(isRange ? `Период: ${periodFrom} – ${periodTo}` : `Дата: ${dateStr}`);
   lines.push('');
   lines.push('ОСНОВНЫЕ ПОКАЗАТЕЛИ');
   lines.push(`Выручка: ${fmtMoney(t.revenue)}`);
@@ -901,7 +934,12 @@ function process(){
   const adRecos = buildAdRecommendations(Object.values(current.campaigns), SETTINGS);
   const priorities = buildPriorities(current, adRecos);
 
-  STATE = { current, previous, priorities, adRecos, dateStr: document.getElementById('report-date').value || todayStr() };
+  STATE = {
+    current, previous, priorities, adRecos,
+    dateStr: document.getElementById('report-date').value || todayStr(),
+    periodFrom: document.getElementById('api-date-from').value || null,
+    periodTo: document.getElementById('api-date-to').value || null,
+  };
   persistState();
   renderAll();
   switchTab('report');
@@ -924,7 +962,7 @@ function renderAll(){
 
 function renderReport(){
   if(!STATE.current){ return; }
-  const text = buildReportText(STATE.current, STATE.priorities, STATE.dateStr);
+  const text = buildReportText(STATE.current, STATE.priorities, STATE.dateStr, STATE.periodFrom, STATE.periodTo);
   document.getElementById('report-empty').hidden = true;
   const pre = document.getElementById('report-text');
   pre.hidden = false;
@@ -1919,6 +1957,8 @@ document.addEventListener('DOMContentLoaded', ()=>{
   document.getElementById('api-proxy-url').value = API_CREDS.proxyUrl||'';
   document.getElementById('api-date-from').value = todayStr();
   document.getElementById('api-date-to').value = todayStr();
+  document.getElementById('api-date-from-prev').value = addDaysUTC(todayStr(), -1);
+  document.getElementById('api-date-to-prev').value = addDaysUTC(todayStr(), -1);
   document.getElementById('perf-client-id').value = PERF_CREDS.clientId||'';
   document.getElementById('perf-client-secret').value = PERF_CREDS.clientSecret||'';
   document.getElementById('btn-perf-save').onclick = ()=>{
@@ -1941,11 +1981,23 @@ document.addEventListener('DOMContentLoaded', ()=>{
     const body = document.getElementById('api-box-body');
     body.hidden = !body.hidden;
   };
-  document.getElementById('btn-api-today').onclick = ()=>{
-    const today = todayStr();
-    document.getElementById('api-date-from').value = today;
-    document.getElementById('api-date-to').value = today;
-  };
+  document.querySelectorAll('[data-preset]').forEach(btn=>{
+    btn.onclick = ()=>{
+      const {from, to} = computePresetRange(btn.dataset.preset);
+      document.getElementById('api-date-from').value = from;
+      document.getElementById('api-date-to').value = to;
+    };
+  });
+  document.querySelectorAll('[data-preset-prev]').forEach(btn=>{
+    btn.onclick = ()=>{
+      const from = document.getElementById('api-date-from').value;
+      const to = document.getElementById('api-date-to').value;
+      if(!from || !to){ apiLog('Сначала выберите текущий период выше.', true); return; }
+      const shifted = shiftRange(from, to, btn.dataset.presetPrev);
+      document.getElementById('api-date-from-prev').value = shifted.from;
+      document.getElementById('api-date-to-prev').value = shifted.to;
+    };
+  });
   document.getElementById('btn-api-save').onclick = ()=>{
     API_CREDS = {
       clientId: document.getElementById('api-client-id').value.trim(),
@@ -1960,8 +2012,8 @@ document.addEventListener('DOMContentLoaded', ()=>{
     btn.onclick = ()=>{
       const period = btn.dataset.period;
       const kind = btn.dataset.apiPull;
-      const from = document.getElementById('api-date-from').value;
-      const to = document.getElementById('api-date-to').value;
+      const from = document.getElementById(period==='previous' ? 'api-date-from-prev' : 'api-date-from').value;
+      const to = document.getElementById(period==='previous' ? 'api-date-to-prev' : 'api-date-to').value;
       if(kind==='stocks') apiPullStocks(period);
       else if(kind==='products') apiPullProducts(period);
       else if(kind==='sales') apiPullSales(period, from, to);
@@ -1971,12 +2023,18 @@ document.addEventListener('DOMContentLoaded', ()=>{
   });
   document.getElementById('btn-api-refresh-all').onclick = async ()=>{
     const btn = document.getElementById('btn-api-refresh-all');
-    // «Обновить всё» всегда берёт сегодняшний день, а не то, что случайно
-    // осталось в полях «Дата с/по» после точечной догрузки другого периода.
-    const today = todayStr();
-    document.getElementById('api-date-from').value = today;
-    document.getElementById('api-date-to').value = today;
-    const from = today, to = today;
+    // Берём период, который явно выбран пресетом/вручную выше (не «предыдущий»
+    // — те поля отдельные специально, чтобы точечная догрузка сравнения не
+    // подменяла период текущего отчёта незаметно).
+    let from = document.getElementById('api-date-from').value;
+    let to = document.getElementById('api-date-to').value;
+    if(!from || !to){
+      const today = todayStr();
+      from = to = today;
+      document.getElementById('api-date-from').value = today;
+      document.getElementById('api-date-to').value = today;
+    }
+    document.getElementById('report-date').value = to;
     btn.disabled = true;
     const originalText = btn.textContent;
     btn.textContent = 'Обновляю…';
