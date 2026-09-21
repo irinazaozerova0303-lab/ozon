@@ -19,6 +19,7 @@
       <button class="tab active" data-tab="upload">Загрузка данных</button>
       <button class="tab" data-tab="report">Отчёт дня</button>
       <button class="tab" data-tab="sku">SKU</button>
+      <button class="tab" data-tab="finance">Финансы</button>
       <button class="tab" data-tab="ads">Реклама</button>
       <button class="tab" data-tab="stock">Остатки</button>
       <button class="tab" data-tab="history">Решения</button>
@@ -164,6 +165,28 @@
       </table>
     </div>
     <div id="sku-detail" class="detail-panel" hidden></div>
+  </section>
+
+  <!-- FINANCE -->
+  <section class="panel" id="panel-finance">
+    <h1>Финансы</h1>
+    <p class="muted">Разбивка расходов по статьям — из файла «Финансы» или из выписки Ozon API (там это приблизительная категоризация по названию операции, не бухгалтерская проводка). Категории, по которым данных нет, в разбивку не включаются, а не считаются нулевыми.</p>
+    <div id="finance-empty" class="empty-state">Нет данных. Загрузите остатки/продажи и, если есть, файл «Финансы» (или подтяните его через API), затем нажмите «Обработать данные».</div>
+    <div id="finance-content" hidden>
+      <div class="detail-grid" id="finance-summary"></div>
+      <h2>Куда уходит выручка</h2>
+      <div id="finance-bar-wrap"></div>
+      <div id="finance-bar-note" class="detail-note"></div>
+      <h2>По товарам</h2>
+      <div class="table-wrap">
+        <table id="finance-table">
+          <thead><tr>
+            <th>SKU</th><th>Название</th><th>Выручка</th><th>Себестоимость</th><th>Комиссия</th><th>Логистика</th><th>Кросс-докинг</th><th>Хранение</th><th>Реклама</th><th>Прочее</th><th>Прибыль</th><th>Маржа</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
   </section>
 
   <!-- ADS -->

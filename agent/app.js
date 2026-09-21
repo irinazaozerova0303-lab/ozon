@@ -39,6 +39,7 @@ const FIELD_SYNONYMS = {
   inTransit: ['в пути','товар в пути','in transit'],
   commission: ['комиссия','комиссия ozon','commission'],
   logistics: ['логистика','логистика ozon','стоимость логистики','logistics'],
+  crossdock: ['кросс-докинг','кроссдокинг','cross docking','crossdock','cross-dock'],
   storage: ['хранение','стоимость хранения','storage'],
   otherExpenses: ['прочие расходы','другие расходы','other expenses'],
   profit: ['прибыль','profit'],
@@ -56,7 +57,7 @@ const FILE_TYPES = {
   sales:       { label:'Продажи / аналитика', requiresSku:true,  indicators:{revenue:3,orders:2,buyouts:1,cardViews:1,cartAdds:1,returns:1,cancellations:1} },
   stocks:      { label:'Остатки',              requiresSku:true,  indicators:{stock:3,inTransit:1,avgSalesDay:1,leadTimeDays:1} },
   advertising: { label:'Реклама',              requiresSku:false, indicators:{impressions:3,clicks:2,adSpend:3,campaign:2,adOrders:1,adRevenue:1,cpc:1} },
-  finance:     { label:'Финансы',              requiresSku:false, indicators:{commission:3,logistics:2,storage:2,otherExpenses:1,profit:2} },
+  finance:     { label:'Финансы',              requiresSku:false, indicators:{commission:3,logistics:2,crossdock:2,storage:2,otherExpenses:1,profit:2} },
   cost:        { label:'Себестоимость',        requiresSku:true,  indicators:{cost:3} },
   shipments:   { label:'Поставки',             requiresSku:false, indicators:{leadTimeDays:3,inTransit:3} },
   products:    { label:'Товары (справочник)',  requiresSku:true,  indicators:{category:3,name:1,minPrice:1,targetMargin:1,targetDrr:1,price:1} },
@@ -68,7 +69,7 @@ const HELP_COLUMNS = [
   ['sales','Продажи / аналитика','SKU, Выручка / Заказано на сумму, Заказы, Выкупы, Возвраты, Отмены, Просмотры карточки, Добавления в корзину, Дата'],
   ['stocks','Остатки','SKU, Остаток, В пути, Средние продажи в день, Срок поставки'],
   ['advertising','Реклама','Кампания, SKU (опц.), Показы, Клики, Расход, Заказы с рекламы, Рекламные продажи, Дата'],
-  ['finance','Финансы','SKU, Комиссия, Логистика, Хранение, Прочие расходы, Прибыль'],
+  ['finance','Финансы','SKU, Комиссия, Логистика, Кросс-докинг, Хранение, Прочие расходы, Прибыль'],
   ['cost','Себестоимость','SKU, Себестоимость'],
   ['shipments','Поставки','SKU, Срок поставки, В пути'],
   ['products','Товары (справочник)','SKU, Название, Категория, Цена, Минимальная цена, Целевая маржинальность, Целевой ДРР'],
@@ -319,7 +320,7 @@ const FIELD_LABELS = {
   clicks:'Клики', cardViews:'Просмотры карточки', cartAdds:'Корзина', adOrders:'Заказы с рекламы',
   adRevenue:'Рекл.продажи', campaign:'Кампания', cpc:'CPC', rating:'Рейтинг',
   reviewsCount:'Кол-во отзывов', date:'Дата', leadTimeDays:'Срок поставки', inTransit:'В пути',
-  commission:'Комиссия', logistics:'Логистика', storage:'Хранение', otherExpenses:'Проч.расходы',
+  commission:'Комиссия', logistics:'Логистика', crossdock:'Кросс-докинг', storage:'Хранение', otherExpenses:'Проч.расходы',
   profit:'Прибыль', beforeValue:'До', afterValue:'После', reason:'Причина',
   expectedEffect:'Ожид.эффект', actualEffect:'Факт.эффект', conclusion:'Вывод',
 };
@@ -390,6 +391,7 @@ function mergeFile(ds, type, rows){
     const targetDrr = parseNumber(row.targetDrr);
     const commission = parseNumber(row.commission);
     const logistics = parseNumber(row.logistics);
+    const crossdock = parseNumber(row.crossdock);
     const storage = parseNumber(row.storage);
     const otherExpenses = parseNumber(row.otherExpenses);
     const profitDirect = parseNumber(row.profit);
@@ -442,6 +444,7 @@ function mergeFile(ds, type, rows){
       if(sku){
         const rec = getOrCreateSku(ds, sku);
         addTo(rec,'commission',commission); addTo(rec,'logistics',logistics);
+        addTo(rec,'crossdock',crossdock);
         addTo(rec,'storage',storage); addTo(rec,'otherExpenses',otherExpenses);
         addTo(rec,'profitDirect',profitDirect);
       }
@@ -505,9 +508,10 @@ function computeDerived(ds){
       rec.profitComplete = true;
     } else if(rec.revenue!=null && rec.cost!=null && unitsSold!=null){
       const cogs = rec.cost * unitsSold;
+      rec.cogs = cogs;
       const missing = [];
       let deduction = cogs;
-      ['commission','logistics','storage','adSpend','otherExpenses'].forEach(f=>{
+      ['commission','logistics','crossdock','storage','adSpend','otherExpenses'].forEach(f=>{
         if(rec[f]!=null) deduction += rec[f]; else missing.push(FIELD_LABELS[f]||f);
       });
       rec.profit = rec.revenue - deduction;
@@ -912,6 +916,7 @@ function persistState(){
 function renderAll(){
   renderReport();
   renderSkuTable();
+  renderFinanceTab();
   renderAdsTab();
   renderStockTab();
   renderHistoryTab();
@@ -986,6 +991,83 @@ function renderSkuDetail(rec){
   `;
   document.getElementById('sku-detail-close').onclick = ()=> el.hidden = true;
   el.scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+const FINANCE_CATEGORIES = [
+  {key:'cogs', label:'Себестоимость', color:'#94A3B8'},
+  {key:'commission', label:'Комиссия', color:'#F59E0B'},
+  {key:'logistics', label:'Логистика', color:'#3B82F6'},
+  {key:'crossdock', label:'Кросс-докинг', color:'#8B5CF6'},
+  {key:'storage', label:'Хранение', color:'#EC4899'},
+  {key:'adSpend', label:'Реклама', color:'#FF6A1A'},
+  {key:'otherExpenses', label:'Прочее', color:'#64748B'},
+];
+
+function renderFinanceTab(){
+  const skus = STATE.current ? Object.values(STATE.current.skuMap) : [];
+  const hasAny = skus.some(s=> ['revenue','cost','commission','logistics','crossdock','storage','adSpend','otherExpenses','profit'].some(f=>s[f]!=null));
+  document.getElementById('finance-empty').hidden = hasAny;
+  document.getElementById('finance-content').hidden = !hasAny;
+  if(!hasAny) return;
+
+  const totals = { revenue: sum(skus.map(s=>s.revenue)) };
+  FINANCE_CATEGORIES.forEach(c=>{ totals[c.key] = sum(skus.map(s=>s[c.key])); });
+  totals.profit = sum(skus.filter(s=>s.profit!=null).map(s=>s.profit));
+  const profitComplete = skus.length>0 && skus.every(s=>s.profit==null || s.profitComplete);
+
+  const summaryItems = [
+    ['Выручка', fmtMoney(totals.revenue)],
+    ...FINANCE_CATEGORIES.map(c=>[c.label, fmtMoney(totals[c.key])]),
+    ['Прибыль', totals.profit!=null ? fmtMoney(totals.profit) + (profitComplete?'':' (прибл.)') : 'Недостаточно данных'],
+    ['Маржинальность', (totals.profit!=null && totals.revenue) ? fmtPct(totals.profit/totals.revenue*100) : 'Недостаточно данных'],
+  ];
+  document.getElementById('finance-summary').innerHTML = summaryItems.map(([l,v])=>
+    `<div class="detail-item"><div class="di-label">${l}</div><div class="di-value">${v}</div></div>`
+  ).join('');
+
+  const barWrap = document.getElementById('finance-bar-wrap');
+  const noteEl = document.getElementById('finance-bar-note');
+  const segments = FINANCE_CATEGORIES
+    .map(c=>({key:c.key, label:c.label, color:c.color, value: totals[c.key]}))
+    .filter(c=> c.value!=null && c.value>0);
+  if(totals.profit!=null && totals.profit>0) segments.push({key:'profit', label:'Прибыль', color:'#16A34A', value: totals.profit});
+  const barTotal = sum(segments.map(s=>s.value));
+  if(!segments.length || !barTotal){
+    barWrap.innerHTML = '';
+    noteEl.textContent = 'Недостаточно данных для разбивки — нужны хотя бы себестоимость и одна статья расходов.';
+  } else {
+    barWrap.innerHTML = `<div class="finance-bar">${segments.map(s=>
+      `<div class="finance-bar-seg" style="width:${(s.value/barTotal*100).toFixed(2)}%;background:${s.color}" title="${escapeHtml(s.label)}: ${fmtMoney(s.value)}"></div>`
+    ).join('')}</div>
+    <div class="finance-legend">${segments.map(s=>
+      `<div class="finance-legend-item"><span class="finance-swatch" style="background:${s.color}"></span>${escapeHtml(s.label)}: ${fmtMoney(s.value)} (${(s.value/barTotal*100).toFixed(1)}%)</div>`
+    ).join('')}</div>`;
+    const missingCats = FINANCE_CATEGORIES.filter(c=> totals[c.key]==null).map(c=>c.label);
+    noteEl.textContent = missingCats.length
+      ? `Не хватает данных по: ${missingCats.join(', ')} — эти статьи не включены в разбивку (не считаются нулевыми).`
+      : (profitComplete?'':'Прибыль приблизительная — не по каждому SKU учтены все статьи расходов.');
+  }
+
+  const tbody = document.querySelector('#finance-table tbody');
+  tbody.innerHTML = '';
+  const sorted = skus.slice().sort((a,b)=>(b.revenue||0)-(a.revenue||0));
+  sorted.forEach(s=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${escapeHtml(s.sku)}</td>
+      <td>${escapeHtml(s.name||'—')}</td>
+      <td>${fmtMoney(s.revenue)}</td>
+      <td>${fmtMoney(s.cogs)}</td>
+      <td>${fmtMoney(s.commission)}</td>
+      <td>${fmtMoney(s.logistics)}</td>
+      <td>${fmtMoney(s.crossdock)}</td>
+      <td>${fmtMoney(s.storage)}</td>
+      <td>${fmtMoney(s.adSpend)}</td>
+      <td>${fmtMoney(s.otherExpenses)}</td>
+      <td>${s.profit!=null?fmtMoney(s.profit):'Недостаточно данных'}</td>
+      <td>${fmtPct(s.marginPct)}</td>`;
+    tbody.appendChild(tr);
+  });
 }
 
 function renderAdsTab(){
@@ -1138,7 +1220,7 @@ function downloadTemplates(){
     'Продажи': ['SKU','Название','Дата','Заказано на сумму','Заказы','Выкупы','Возвраты','Отмены','Просмотры карточки','Добавления в корзину'],
     'Остатки': ['SKU','Название','Остаток','В пути','Средние продажи в день','Срок поставки'],
     'Реклама': ['Кампания','SKU','Дата','Показы','Клики','Расход','Заказы с рекламы','Рекламные продажи'],
-    'Финансы': ['SKU','Комиссия','Логистика','Хранение','Прочие расходы','Прибыль'],
+    'Финансы': ['SKU','Комиссия','Логистика','Кросс-докинг','Хранение','Прочие расходы','Прибыль'],
     'Себестоимость': ['SKU','Себестоимость'],
     'Поставки': ['SKU','Срок поставки','В пути'],
     'Товары': ['SKU','Название','Категория','Цена','Минимальная цена','Целевая маржинальность','Целевой ДРР'],
@@ -1448,6 +1530,7 @@ async function apiPullReviews(period){
 }
 
 const FINANCE_KEYWORDS = {
+  crossdock: ['кросс-докинг','кроссдокинг','crossdock','cross dock','cross-dock','докинг'],
   commission: ['комисс','commission','agent'],
   logistics: ['логист','logistic','delivery','доставк','перевозк'],
   storage: ['хранен','storage'],
@@ -1493,8 +1576,9 @@ async function apiPullFinance(period, dateFrom, dateTo){
           const cat = line.name==='commission' ? 'commission' : categorizeFinanceLine(line.name);
           const share = amt / targets.length;
           targets.forEach(sku=>{
-            if(!bySku[sku]) bySku[sku] = {commission:0, logistics:0, storage:0, otherExpenses:0};
+            if(!bySku[sku]) bySku[sku] = {commission:0, logistics:0, crossdock:0, storage:0, otherExpenses:0};
             if(cat==='commission') bySku[sku].commission += share;
+            else if(cat==='crossdock') bySku[sku].crossdock += share;
             else if(cat==='logistics') bySku[sku].logistics += share;
             else if(cat==='storage') bySku[sku].storage += share;
             else bySku[sku].otherExpenses += share;
@@ -1936,7 +2020,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     document.getElementById('upload-log').innerHTML = '';
     document.getElementById('report-text').hidden = true;
     document.getElementById('report-empty').hidden = false;
-    renderSkuTable(); renderAdsTab(); renderStockTab();
+    renderSkuTable(); renderFinanceTab(); renderAdsTab(); renderStockTab();
   };
 
   document.getElementById('btn-copy-report').onclick = ()=>{
